@@ -1,0 +1,12 @@
+{
+  "name": "@uipc/deno",
+  "version": "0.1.0",
+  "exports": "./deno-plugin/mod.ts",
+  "tasks": {
+    "demo": "deno run --allow-ffi --allow-env demo/deno_client.ts",
+    "test": "deno test --allow-ffi --allow-env tests/",
+    "bench": "deno bench --allow-ffi --allow-env"
+  },
+  "fmt": { "lineWidth": 100 },
+  "lint": { "rules": { "tags": ["recommended"] } }
+}
