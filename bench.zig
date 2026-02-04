@@ -52,4 +52,18 @@ pub fn main() !void {
     const per = ns / ITERS;
     const mps = ITERS * 1_000_000_000 / ns;
 
+    std.debug.print(
+        \\
+        \\  ╔══════════════════════════════════╗
+        \\  ║   Universal-IPC Bench Results   ║
+        \\  ╠══════════════════════════════════╣
+        \\  ║  Messages     : {d:>12}     ║
+        \\  ║  Total ns     : {d:>12}     ║
+        \\  ║  ns/msg       : {d:>12}     ║
+        \\  ║  msg/sec      : {d:>12}     ║
+        \\  ╚══════════════════════════════════╝
+        \\
+    ,
+        .{ ITERS, ns, per, mps },
+    );
 }
