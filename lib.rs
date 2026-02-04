@@ -1,0 +1,317 @@
+#![deny(clippy::all)]
+#![allow(clippy::missing_safety_doc)]
+
+mod ffi;
+
+use std::{
+    ffi::CString,
+    ptr::NonNull,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+};
+
+use napi::{
+    bindgen_prelude::*,
+    threadsafe_function::{ErrorStrategy, ThreadsafeFunction, ThreadsafeFunctionCallMode},
+    CallContext, Env, JsBuffer, JsNumber, JsObject, JsString, JsUndefined, JsUnknown, Result,
+};
+use napi_derive::napi;
+
+use ffi::msg_type;
+
+
+struct RingState {
+    ptr:    NonNull<ffi::UIPCRing>,
+    msg_id: AtomicU64,
+}
+
+
+unsafe impl Send for RingState {}
+unsafe impl Sync for RingState {}
+
+impl Drop for RingState {
+    fn drop(&mut self) {
+        unsafe { ffi::uipc_close(self.ptr.as_ptr()) };
+    }
+}
+
+
+
+#[napi]
+pub struct UIPCRingHandle {
+    inner: Arc<RingState>,
+}
+
+#[napi]
+impl UIPCRingHandle {
+    #[napi(constructor)]
+    pub fn new(name: String, create: bool) -> Result<Self> {
+        let c_name = CString::new(name.clone())
+            .map_err(|_| Error::from_reason("Invalid shm name: contains null byte"))?;
+
+        let ptr = unsafe { ffi::uipc_open(c_name.as_ptr(), create as u8) };
+
+        let nn = NonNull::new(ptr)
+            .ok_or_else(|| Error::from_reason(format!("Failed to open ring '{name}'")))?;
+
+        Ok(Self {
+            inner: Arc::new(RingState {
+                ptr:    nn,
+                msg_id: AtomicU64::new(1),
+            }),
+        })
+    }
+
+    
+
+    #[napi]
+    pub fn send(
+        &self,
+        msg_type: u8,
+        payload: Buffer,
+        correlation_id: Option<BigInt>,
+    ) -> Result<()> {
+        let id = self.inner.msg_id.fetch_add(1, Ordering::Relaxed);
+        let corr = correlation_id
+            .and_then(|b| b.get_u64().ok().map(|(_, v, _)| v))
+            .unwrap_or(0);
+
+        let rc = unsafe {
+            ffi::uipc_send(
+                self.inner.ptr.as_ptr(),
+                msg_type,
+                id,
+                corr,
+                payload.as_ptr(),
+                payload.len() as u32,
+            )
+        };
+
+        if rc != 0 {
+            return Err(Error::from_reason("Ring full or send failed"));
+        }
+        Ok(())
+    }
+
+    #[napi]
+    pub fn send_call(&self, payload: Buffer, env: Env) -> Result<JsUnknown> {
+        let id = self.inner.msg_id.fetch_add(1, Ordering::Relaxed);
+
+        let rc = unsafe {
+            ffi::uipc_send(
+                self.inner.ptr.as_ptr(),
+                msg_type::CALL,
+                id,
+                0,
+                payload.as_ptr(),
+                payload.len() as u32,
+            )
+        };
+
+        if rc != 0 {
+            return Err(Error::from_reason("Ring full or send failed"));
+        }
+
+        env.create_bigint_from_u64(id)
+            .map(|b| b.into_unknown())
+    }
+
+    #[napi]
+    pub fn emit(&self, payload: Buffer) -> Result<()> {
+        let id = self.inner.msg_id.fetch_add(1, Ordering::Relaxed);
+        let rc = unsafe {
+            ffi::uipc_send(
+                self.inner.ptr.as_ptr(),
+                msg_type::EVENT,
+                id,
+                0,
+                payload.as_ptr(),
+                payload.len() as u32,
+            )
+        };
+        if rc != 0 {
+            Err(Error::from_reason("Ring full"))
+        } else {
+            Ok(())
+        }
+    }
+
+    
+
+    #[napi]
+    pub fn poll(&self, env: Env) -> Result<JsUnknown> {
+        let mut header = ffi::UIPCHeader::default();
+        let max_payload = unsafe { ffi::uipc_max_payload() } as usize;
+        let mut payload_buf = vec![0u8; max_payload];
+        let mut payload_len: u32 = 0;
+
+        let rc = unsafe {
+            ffi::uipc_poll(
+                self.inner.ptr.as_ptr(),
+                &mut header,
+                payload_buf.as_mut_ptr(),
+                &mut payload_len,
+            )
+        };
+
+        match rc {
+            1 => {
+                
+                let mut obj = env.create_object()?;
+
+                obj.set_named_property("msgType",       env.create_uint32(header.msg_type as u32)?)?;
+                obj.set_named_property("msgId",         env.create_bigint_from_u64(header.msg_id)?.into_unknown())?;
+                obj.set_named_property("correlationId", env.create_bigint_from_u64(header.correlation_id)?.into_unknown())?;
+                obj.set_named_property("senderPid",     env.create_uint32(header.sender_pid as u32)?)?;
+
+                let len = payload_len as usize;
+                payload_buf.truncate(len);
+                let jsbuf = env.create_buffer_with_data(payload_buf)?;
+                obj.set_named_property("payload", jsbuf.into_raw())?;
+
+                Ok(obj.into_unknown())
+            }
+            0 => env.get_null().map(|v| v.into_unknown()),
+            _ => Err(Error::from_reason("Ring error or CRC mismatch")),
+        }
+    }
+
+    #[napi]
+    pub fn drain(&self, env: Env) -> Result<JsUnknown> {
+        let mut results: Vec<JsUnknown> = Vec::new();
+
+        loop {
+            let msg = self.poll(env)?;
+            
+            if matches!(msg.get_type()?, ValueType::Null) {
+                break;
+            }
+            results.push(msg);
+        }
+
+        let mut arr = env.create_array(results.len() as u32)?;
+        for (i, item) in results.into_iter().enumerate() {
+            arr.set_element(i as u32, item)?;
+        }
+        Ok(arr.into_unknown())
+    }
+
+    
+
+    #[napi]
+    pub fn wait_for_reply(
+        &self,
+        wait_for_id: BigInt,
+        timeout_ms: u32,
+    ) -> AsyncTask<WaitTask> {
+        let (_, id, _) = wait_for_id.get_u64().unwrap_or((false, 0, false));
+        AsyncTask::new(WaitTask {
+            inner:      Arc::clone(&self.inner),
+            target_id:  id,
+            timeout_ms,
+        })
+    }
+
+    
+
+    #[napi]
+    pub fn stats(&self, env: Env) -> Result<JsObject> {
+        let mut used: u64 = 0;
+        let mut free: u64 = 0;
+        unsafe { ffi::uipc_stats(self.inner.ptr.as_ptr(), &mut used, &mut free) };
+
+        let mut obj = env.create_object()?;
+        obj.set_named_property("used", env.create_bigint_from_u64(used)?.into_unknown())?;
+        obj.set_named_property("free", env.create_bigint_from_u64(free)?.into_unknown())?;
+        Ok(obj)
+    }
+
+    #[napi]
+    pub fn unlink(&self) {
+        unsafe { ffi::uipc_unlink(self.inner.ptr.as_ptr()) };
+    }
+
+    #[napi]
+    pub fn max_payload_size() -> u32 {
+        unsafe { ffi::uipc_max_payload() }
+    }
+}
+
+
+
+pub struct WaitTask {
+    inner:      Arc<RingState>,
+    target_id:  u64,
+    timeout_ms: u32,
+}
+
+#[napi]
+impl Task for WaitTask {
+    type Output  = Option<(ffi::UIPCHeader, Vec<u8>)>;
+    type JsValue = JsUnknown;
+
+    fn compute(&mut self) -> Result<Self::Output> {
+        let deadline = std::time::Instant::now()
+            + std::time::Duration::from_millis(self.timeout_ms as u64);
+
+        let max_payload = unsafe { ffi::uipc_max_payload() } as usize;
+        let mut header  = ffi::UIPCHeader::default();
+        let mut buf     = vec![0u8; max_payload];
+        let mut len: u32 = 0;
+
+        loop {
+            let rc = unsafe {
+                ffi::uipc_poll(self.inner.ptr.as_ptr(), &mut header, buf.as_mut_ptr(), &mut len)
+            };
+
+            if rc == 1 && header.correlation_id == self.target_id {
+                buf.truncate(len as usize);
+                return Ok(Some((header, buf)));
+            }
+
+            if std::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+
+            
+            std::hint::spin_loop();
+        }
+    }
+
+    fn resolve(&mut self, env: Env, output: Self::Output) -> Result<Self::JsValue> {
+        match output {
+            None => env.get_null().map(|v| v.into_unknown()),
+            Some((header, payload)) => {
+                let mut obj = env.create_object()?;
+                obj.set_named_property("msgType",       env.create_uint32(header.msg_type as u32)?)?;
+                obj.set_named_property("msgId",         env.create_bigint_from_u64(header.msg_id)?.into_unknown())?;
+                obj.set_named_property("correlationId", env.create_bigint_from_u64(header.correlation_id)?.into_unknown())?;
+                obj.set_named_property("senderPid",     env.create_uint32(header.sender_pid as u32)?)?;
+                let jsbuf = env.create_buffer_with_data(payload)?;
+                obj.set_named_property("payload", jsbuf.into_raw())?;
+                Ok(obj.into_unknown())
+            }
+        }
+    }
+
+    fn reject(&mut self, _env: Env, err: Error) -> Result<Self::JsValue> {
+        Err(err)
+    }
+}
+
+
+
+#[napi]
+pub const MSG_CALL:  u8 = msg_type::CALL;
+#[napi]
+pub const MSG_REPLY: u8 = msg_type::REPLY;
+#[napi]
+pub const MSG_EVENT: u8 = msg_type::EVENT;
+#[napi]
+pub const MSG_PING:  u8 = msg_type::PING;
+#[napi]
+pub const MSG_PONG:  u8 = msg_type::PONG;
+#[napi]
+pub const MSG_ERROR: u8 = msg_type::ERROR;

@@ -1,0 +1,201 @@
+import {
+  encode,
+  decode,
+  encodeAuto,
+  decodeAuto,
+  v,
+  type FlatMsg,
+} from "./flat_msg.ts";
+
+export type Handler = (
+  args: Record<string, unknown>,
+) => Promise<unknown> | unknown;
+
+export interface RPCPeer {
+  call(
+    method: string,
+    args?: Record<string, unknown>,
+    timeoutMs?: number,
+  ): Promise<unknown>;
+
+  register(method: string, handler: Handler): void;
+
+  start(): void;
+
+  stop(): void;
+}
+
+export interface RingLike {
+  send(
+    msgType: number,
+    payload: Uint8Array | Buffer,
+    correlationId?: bigint,
+  ): bigint;
+  poll(): {
+    msgType: number;
+    msgId: bigint;
+    correlationId: bigint;
+    payload: Uint8Array | Buffer;
+  } | null;
+  readonly maxPayloadSize: number;
+}
+
+export class RPCNode implements RPCPeer {
+  readonly #sendRing: RingLike;
+  readonly #recvRing: RingLike;
+  readonly #handlers: Map<string, Handler> = new Map();
+  readonly #pending: Map<
+    bigint,
+    {
+      resolve: (v: unknown) => void;
+      reject: (e: Error) => void;
+      timer: ReturnType<typeof setTimeout>;
+    }
+  > = new Map();
+  #running = false;
+  #pollTimer: ReturnType<typeof setInterval> | null = null;
+
+  static readonly MSG_CALL = 0x01;
+  static readonly MSG_REPLY = 0x02;
+  static readonly MSG_EVENT = 0x03;
+  static readonly MSG_ERROR = 0xff;
+  constructor(sendRing: RingLike, recvRing?: RingLike) {
+    this.#sendRing = sendRing;
+    this.#recvRing = recvRing ?? sendRing;
+  }
+
+  async call(
+    method: string,
+    args: Record<string, unknown> = {},
+    timeoutMs = 5000,
+  ): Promise<unknown> {
+    const payload = encodeAuto({ method, ...args });
+    const msgId = this.#sendRing.send(RPCNode.MSG_CALL, payload as any);
+
+    return new Promise<unknown>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#pending.delete(msgId);
+        reject(new Error(`RPC timeout: method='${method}' msgId=${msgId}`));
+      }, timeoutMs);
+
+      this.#pending.set(msgId, { resolve, reject, timer });
+    });
+  }
+
+  emit(event: string, data: Record<string, unknown> = {}): void {
+    const payload = encodeAuto({ event, ...data });
+    this.#sendRing.send(RPCNode.MSG_EVENT, payload as any);
+  }
+
+  register(method: string, handler: Handler): void {
+    this.#handlers.set(method, handler);
+  }
+
+  start(pollIntervalMs = 1): void {
+    this.#running = true;
+    this.#pollTimer = setInterval(() => this.#tick(), pollIntervalMs);
+  }
+
+  stop(): void {
+    this.#running = false;
+    if (this.#pollTimer) {
+      clearInterval(this.#pollTimer);
+      this.#pollTimer = null;
+    }
+
+    for (const [id, p] of this.#pending) {
+      clearTimeout(p.timer);
+      p.reject(
+        new Error(`RPCNode stopped while awaiting reply to msgId=${id}`),
+      );
+    }
+    this.#pending.clear();
+  }
+
+  #tick(): void {
+    if (!this.#running) return;
+
+    let msg;
+    while ((msg = this.#recvRing.poll()) !== null) {
+      const payload =
+        msg.payload instanceof Buffer
+          ? new Uint8Array(
+              msg.payload.buffer,
+              msg.payload.byteOffset,
+              msg.payload.byteLength,
+            )
+          : msg.payload;
+
+      switch (msg.msgType) {
+        case RPCNode.MSG_CALL:
+          this.#handleCall(msg.msgId, payload);
+          break;
+        case RPCNode.MSG_REPLY:
+          this.#handleReply(msg.correlationId, payload);
+          break;
+        case RPCNode.MSG_EVENT:
+          this.#handleEvent(payload);
+          break;
+      }
+    }
+  }
+
+  async #handleCall(msgId: bigint, payload: Uint8Array): Promise<void> {
+    let result: unknown;
+    let isError = false;
+
+    try {
+      const args = decodeAuto(payload);
+      const method = args.method as string;
+      const handler = this.#handlers.get(method);
+      if (!handler) throw new Error(`Unknown RPC method: '${method}'`);
+
+      const { method: _, ...rest } = args;
+      result = await handler(rest);
+    } catch (err: unknown) {
+      isError = true;
+      result = err instanceof Error ? err.message : String(err);
+    }
+
+    const replyPayload = encodeAuto(
+      isError ? { error: result as string } : { result: result ?? null },
+    );
+
+    try {
+      this.#sendRing.send(RPCNode.MSG_REPLY, replyPayload as any, msgId);
+    } catch {}
+  }
+
+  #handleReply(correlationId: bigint, payload: Uint8Array): void {
+    const pending = this.#pending.get(correlationId);
+    if (!pending) return;
+
+    clearTimeout(pending.timer);
+    this.#pending.delete(correlationId);
+
+    const obj = decodeAuto(payload);
+    if ("error" in obj) {
+      pending.reject(new Error(obj.error as string));
+    } else {
+      pending.resolve(obj.result);
+    }
+  }
+
+  #handleEvent(payload: Uint8Array): void {
+    try {
+      const obj = decodeAuto(payload);
+      const event = obj.event as string;
+      const handler = this.#handlers.get(`event:${event}`);
+      if (handler) {
+        const { event: _, ...rest } = obj;
+        void handler(rest);
+      }
+    } catch {
+      /* ignore malformed events */
+    }
+  }
+
+  onEvent(event: string, handler: Handler): void {
+    this.#handlers.set(`event:${event}`, handler);
+  }
+}

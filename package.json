@@ -1,0 +1,34 @@
+{
+  "name": "universal-ipc-bridge",
+  "version": "0.1.0",
+  "description": "Zero-copy, lock-free IPC between Bun, Node.js, and Deno via POSIX shared memory",
+  "type": "module",
+  "scripts": {
+    "build": "bash scripts/build-all.sh",
+    "bench": "bash scripts/bench.sh",
+    "demo": "bash scripts/run-demo.sh",
+    "test": "bun test tests/",
+    "test:zig": "cd core && zig build test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.0.0"
+  },
+  "keywords": [
+    "ipc",
+    "shared-memory",
+    "ring-buffer",
+    "bun",
+    "deno",
+    "nodejs",
+    "zig",
+    "rust",
+    "ffi"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0",
+    "bun": ">=1.1.0"
+  }
+}
