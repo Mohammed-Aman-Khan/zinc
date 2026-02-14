@@ -2,6 +2,27 @@
 
 > Zero-copy, lock-free inter-runtime communication between Bun, Node.js, and Deno at RAM speed.
 
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  POSIX Shared Memory                    │
+│  ┌──────────────────────────────────────────────────┐   │
+│  │           Lock-Free Ring Buffer                  │   │
+│  │  ┌────────┬────────┬────────┬────────┬────────┐  │   │
+│  │  │ Slot 0 │ Slot 1 │ Slot 2 │  ...   │Slot N-1│  │   │
+│  │  └────────┴────────┴────────┴────────┴────────┘  │   │
+│  │  head(atomic u64)              tail(atomic u64)   │   │
+│  └──────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────┘
+         ▲                    ▲                  ▲
+         │                    │                  │
+  ┌──────┴──┐          ┌──────┴──┐        ┌──────┴──┐
+  │  Bun    │          │ Node.js │        │  Deno   │
+  │ Zig FFI │          │Rust NAPI│        │Rust NAPI│
+  └─────────┘          └─────────┘        └─────────┘
+```
+
 ## Core Design Principles
 
 1. **Zero-Copy**: Data is written once into shared memory. No serialization copies.
