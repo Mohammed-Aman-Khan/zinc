@@ -1,5 +1,9 @@
+// node-addon/src/ffi.rs
+//! Raw FFI bindings to libuipc_core (the Zig shared memory ring buffer).
+
 use libc::{c_char, c_int};
 
+/// Matches `UIPCHeader` in uipc.h — must be kept in sync.
 #[repr(C, packed)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UIPCHeader {
@@ -16,6 +20,7 @@ pub struct UIPCHeader {
 
 const _: () = assert!(std::mem::size_of::<UIPCHeader>() == 32);
 
+/// Opaque handle returned by uipc_open.
 #[repr(C)]
 pub struct UIPCRing {
     _private: [u8; 0],
@@ -49,6 +54,7 @@ extern "C" {
     pub fn uipc_max_payload() -> u32;
 }
 
+/// Message type constants.
 pub mod msg_type {
     pub const CALL:  u8 = 0x01;
     pub const REPLY: u8 = 0x02;

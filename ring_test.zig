@@ -1,19 +1,20 @@
-const std = @import("std");
-const rb = @import("ring_buffer.zig");
+/// core/ring_test.zig — unit tests for the ring buffer.
+const std     = @import("std");
+const rb      = @import("ring_buffer.zig");
 const testing = std.testing;
 
+/// In-process smoke test: single producer, single consumer, 10k messages.
 test "single producer single consumer" {
+    // Use a unique name so parallel test runs don't collide.
     const name = "/uipc_test_spsc";
     std.posix.shm_unlink(name) catch {};
 
     var ring = try rb.RingBuffer.open(name, true);
-    defer {
-        ring.unlink();
-        ring.close();
-    }
+    defer { ring.unlink(); ring.close(); }
 
     const ITERS = 10_000;
 
+    // ── Producer thread ──────────────────────────────────────────────────
     const producer = try std.Thread.spawn(.{}, struct {
         fn run(r: *rb.RingBuffer) void {
             var buf: [64]u8 = undefined;
@@ -28,13 +29,14 @@ test "single producer single consumer" {
         }
     }.run, .{&ring});
 
+    // ── Consumer (main thread) ───────────────────────────────────────────
     const Handler = struct {
-        count: u64 = 0,
-        sum: u64 = 0,
+        count:   u64  = 0,
+        sum:     u64  = 0,
 
         pub fn handle(self: *@This(), _: *const rb.MsgHeader, payload: []const u8) !void {
             self.count += 1;
-            self.sum += std.mem.readInt(u64, payload[0..8], .little);
+            self.sum   += std.mem.readInt(u64, payload[0..8], .little);
         }
     };
 
@@ -44,6 +46,7 @@ test "single producer single consumer" {
     }
     producer.join();
 
+    // sum of 0..9999 == 49_995_000
     try testing.expectEqual(@as(u64, ITERS), h.count);
     const expected_sum = ITERS * (ITERS - 1) / 2;
     try testing.expectEqual(expected_sum, h.sum);
@@ -54,11 +57,9 @@ test "ring full returns null" {
     std.posix.shm_unlink(name) catch {};
 
     var ring = try rb.RingBuffer.open(name, true);
-    defer {
-        ring.unlink();
-        ring.close();
-    }
+    defer { ring.unlink(); ring.close(); }
 
+    // Fill the ring.
     var sent: usize = 0;
     while (sent < rb.RING_CAPACITY) {
         if (ring.claim()) |idx| {
@@ -67,6 +68,7 @@ test "ring full returns null" {
         } else break;
     }
 
+    // Next claim should return null.
     try testing.expectEqual(@as(?usize, null), ring.claim());
 }
 
@@ -75,13 +77,11 @@ test "crc32 rejects tampered payload" {
     std.posix.shm_unlink(name) catch {};
 
     var ring = try rb.RingBuffer.open(name, true);
-    defer {
-        ring.unlink();
-        ring.close();
-    }
+    defer { ring.unlink(); ring.close(); }
 
     try ring.send(.call, 1, 0, "legitimate payload");
 
+    // Tamper with the slot.
     ring.slots[0].payload[3] ^= 0xFF;
 
     const Handler = struct {
@@ -97,10 +97,7 @@ test "stats reflect usage" {
     std.posix.shm_unlink(name) catch {};
 
     var ring = try rb.RingBuffer.open(name, true);
-    defer {
-        ring.unlink();
-        ring.close();
-    }
+    defer { ring.unlink(); ring.close(); }
 
     const s0 = ring.stats();
     try testing.expectEqual(@as(u64, 0), s0.used);
@@ -117,10 +114,7 @@ test "payload size limit enforced" {
     std.posix.shm_unlink(name) catch {};
 
     var ring = try rb.RingBuffer.open(name, true);
-    defer {
-        ring.unlink();
-        ring.close();
-    }
+    defer { ring.unlink(); ring.close(); }
 
     const huge = [_]u8{0} ** (rb.MAX_PAYLOAD + 1);
     const result = ring.send(.event, 1, 0, &huge);

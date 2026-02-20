@@ -1,6 +1,10 @@
+// node-addon/build.rs
 fn main() {
     napi_build::setup();
-    
+
+    // Link the Zig-compiled static core library.
+    // During development we expect it at ../core/zig-out/lib/libuipc_core_static.a
+    // In CI / release the build script copies it to OUT_DIR.
     let core_lib = std::env::var("UIPC_CORE_LIB")
         .unwrap_or_else(|_| "../core/zig-out/lib".to_string());
 

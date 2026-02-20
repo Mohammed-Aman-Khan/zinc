@@ -1,11 +1,13 @@
+/**
+ * tests/flat_msg.test.ts
+ * Unit tests for the FlatMsg serialization protocol.
+ * Run with: bun test tests/flat_msg.test.ts
+ */
+
 import { describe, it, expect } from "bun:test";
 import {
-  encode,
-  decode,
-  encodeAuto,
-  decodeAuto,
-  v,
-  type FlatMsg,
+  encode, decode, encodeAuto, decodeAuto,
+  v, type FlatMsg,
 } from "../protocol/flat_msg.ts";
 
 describe("FlatMsg encode/decode roundtrip", () => {
@@ -45,10 +47,7 @@ describe("FlatMsg encode/decode roundtrip", () => {
   it("encodes and decodes string", () => {
     const msg: FlatMsg = { greeting: v.str("Hello, 世界! 🌍") };
     const decoded = decode(encode(msg));
-    expect(decoded.greeting).toEqual({
-      type: "string",
-      value: "Hello, 世界! 🌍",
-    });
+    expect(decoded.greeting).toEqual({ type: "string", value: "Hello, 世界! 🌍" });
   });
 
   it("encodes and decodes bytes", () => {
@@ -67,14 +66,9 @@ describe("FlatMsg encode/decode roundtrip", () => {
 
   it("handles many fields", () => {
     const msg: FlatMsg = {
-      a: v.u32(1),
-      b: v.str("two"),
-      c: v.bool(true),
-      d: v.f64(4.0),
-      e: v.u64(5n),
-      f: v.null(),
-      g: v.i32(-7),
-      h: v.i64(-8n),
+      a: v.u32(1), b: v.str("two"), c: v.bool(true),
+      d: v.f64(4.0), e: v.u64(5n), f: v.null(),
+      g: v.i32(-7), h: v.i64(-8n),
     };
     const decoded = decode(encode(msg));
     expect(Object.keys(decoded).length).toBe(8);
@@ -112,7 +106,7 @@ describe("size constraints", () => {
     const msg: FlatMsg = {};
     for (let i = 0; i < 1000; i++) msg[`field_${i}`] = v.u32(i);
     const encoded = encode(msg);
-    const decoded = decode(encoded);
+    const decoded  = decode(encoded);
     expect(Object.keys(decoded).length).toBe(1000);
     const f = decoded["field_999"] as { type: "u32"; value: number };
     expect(f.value).toBe(999);
@@ -120,6 +114,7 @@ describe("size constraints", () => {
 
   it("rejects key with null byte", () => {
     const msg: FlatMsg = { normal: v.u32(1) };
+    // Can't inject null byte via TS normally, but validate encoding doesn't crash.
     expect(() => encode(msg)).not.toThrow();
   });
 });

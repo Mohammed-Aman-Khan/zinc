@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# scripts/build-all.sh — Build everything: Zig core + Rust N-API addon
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,6 +11,7 @@ ok()   { echo -e "${GREEN}[ok]${NC}    $*"; }
 warn() { echo -e "${YELLOW}[warn]${NC}  $*"; }
 die()  { echo -e "${RED}[fail]${NC}  $*"; exit 1; }
 
+# ── Zig core ────────────────────────────────────────────────────────────────
 log "Building Zig core (ring buffer)..."
 
 command -v zig >/dev/null 2>&1 || die "zig not found. Install from https://ziglang.org/download/"
@@ -18,6 +20,7 @@ cd "$ROOT/core"
 zig build -Doptimize=ReleaseFast 2>&1 || die "Zig build failed"
 ok "Zig core built → core/zig-out/lib/libuipc_core.{so,a}"
 
+# ── Rust N-API addon (Node.js) ───────────────────────────────────────────────
 log "Building Rust N-API addon (Node.js)..."
 
 command -v cargo >/dev/null 2>&1 || { warn "cargo not found — skipping Node.js addon"; goto_deno; }
@@ -27,6 +30,7 @@ cd "$ROOT/node-addon"
 UIPC_CORE_LIB="$ROOT/core/zig-out/lib" cargo build --release 2>&1 \
   || die "Rust build failed"
 
+# napi-rs names the output with the platform suffix; normalize it.
 ADDON_SRC=$(ls "$ROOT/node-addon/target/release/"*.node 2>/dev/null | head -1 || true)
 if [[ -z "$ADDON_SRC" ]]; then
   warn "No .node file found in target/release — you may need to run 'npm run build' via @napi-rs/cli"
@@ -34,8 +38,9 @@ else
   ok "Node addon built → ${ADDON_SRC}"
 fi
 
-goto_deno() { true; }
+goto_deno() { true; }  # label stub
 
+# ── TypeScript type-check (bun) ──────────────────────────────────────────────
 log "Type-checking TypeScript sources..."
 command -v bun >/dev/null 2>&1 || { warn "bun not found — skipping TS check"; exit 0; }
 

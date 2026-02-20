@@ -1,76 +1,83 @@
-import {
-  encode,
-  decode,
-  encodeAuto,
-  decodeAuto,
-  v,
-  type FlatMsg,
-} from "./flat_msg.ts";
+/**
+ * protocol/rpc.ts
+ * Lightweight RPC layer over the Universal-IPC ring buffer.
+ *
+ * Pattern:
+ *   Caller  → sends CALL with { method, args... }
+ *   Callee  → receives CALL, dispatches handler, sends REPLY with { result } or { error }
+ *   Caller  → receives REPLY matched by correlationId
+ *
+ * Both sides share the same ring (MPSC-like). Each peer must have a unique
+ * consumer window — or use two separate rings (one per direction).
+ */
 
-export type Handler = (
-  args: Record<string, unknown>,
-) => Promise<unknown> | unknown;
+import { encode, decode, encodeAuto, decodeAuto, v, type FlatMsg } from "./flat_msg.ts";
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+export type Handler = (args: Record<string, unknown>) => Promise<unknown> | unknown;
 
 export interface RPCPeer {
-  call(
-    method: string,
-    args?: Record<string, unknown>,
-    timeoutMs?: number,
-  ): Promise<unknown>;
+  /** Send a CALL and await the REPLY. Throws on timeout or remote error. */
+  call(method: string, args?: Record<string, unknown>, timeoutMs?: number): Promise<unknown>;
 
+  /** Register a handler for incoming CALLs. */
   register(method: string, handler: Handler): void;
 
+  /** Start the receive loop (runs until stop() is called). */
   start(): void;
 
+  /** Gracefully stop the receive loop. */
   stop(): void;
 }
 
+// Minimal ring interface so this module stays transport-agnostic.
 export interface RingLike {
-  send(
-    msgType: number,
-    payload: Uint8Array | Buffer,
-    correlationId?: bigint,
-  ): bigint;
-  poll(): {
-    msgType: number;
-    msgId: bigint;
-    correlationId: bigint;
-    payload: Uint8Array | Buffer;
-  } | null;
+  send(msgType: number, payload: Uint8Array | Buffer, correlationId?: bigint): bigint;
+  poll(): { msgType: number; msgId: bigint; correlationId: bigint; payload: Uint8Array | Buffer } | null;
   readonly maxPayloadSize: number;
 }
 
+// ── RPCNode ────────────────────────────────────────────────────────────────
+
 export class RPCNode implements RPCPeer {
-  readonly #sendRing: RingLike;
-  readonly #recvRing: RingLike;
+  readonly #sendRing: RingLike;  // Ring to write outgoing CALLs/events
+  readonly #recvRing: RingLike;  // Ring to read replies/incoming calls
   readonly #handlers: Map<string, Handler> = new Map();
-  readonly #pending: Map<
-    bigint,
-    {
-      resolve: (v: unknown) => void;
-      reject: (e: Error) => void;
-      timer: ReturnType<typeof setTimeout>;
-    }
-  > = new Map();
+  readonly #pending:  Map<bigint, {
+    resolve: (v: unknown) => void;
+    reject:  (e: Error)   => void;
+    timer:   ReturnType<typeof setTimeout>;
+  }> = new Map();
   #running = false;
   #pollTimer: ReturnType<typeof setInterval> | null = null;
 
-  static readonly MSG_CALL = 0x01;
+  // Msg type constants (must match MSG in ring adapters).
+  static readonly MSG_CALL  = 0x01;
   static readonly MSG_REPLY = 0x02;
   static readonly MSG_EVENT = 0x03;
-  static readonly MSG_ERROR = 0xff;
+  static readonly MSG_ERROR = 0xFF;
+
+  /**
+   * Two-ring model: sendRing carries requests, recvRing carries replies.
+   * For a server: sendRing = replyRing, recvRing = requestRing.
+   * For a client: sendRing = requestRing, recvRing = replyRing.
+   * Single-ring mode (same ring for both) works for simple cases.
+   */
   constructor(sendRing: RingLike, recvRing?: RingLike) {
     this.#sendRing = sendRing;
     this.#recvRing = recvRing ?? sendRing;
   }
+
+  // ── Producer ──────────────────────────────────────────────────────────
 
   async call(
     method: string,
     args: Record<string, unknown> = {},
     timeoutMs = 5000,
   ): Promise<unknown> {
-    const payload = encodeAuto({ method, ...args });
-    const msgId = this.#sendRing.send(RPCNode.MSG_CALL, payload as any);
+    const payload   = encodeAuto({ method, ...args });
+    const msgId     = this.#sendRing.send(RPCNode.MSG_CALL, payload as any);
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -87,6 +94,8 @@ export class RPCNode implements RPCPeer {
     this.#sendRing.send(RPCNode.MSG_EVENT, payload as any);
   }
 
+  // ── Consumer ──────────────────────────────────────────────────────────
+
   register(method: string, handler: Handler): void {
     this.#handlers.set(method, handler);
   }
@@ -102,12 +111,10 @@ export class RPCNode implements RPCPeer {
       clearInterval(this.#pollTimer);
       this.#pollTimer = null;
     }
-
+    // Reject all pending calls.
     for (const [id, p] of this.#pending) {
       clearTimeout(p.timer);
-      p.reject(
-        new Error(`RPCNode stopped while awaiting reply to msgId=${id}`),
-      );
+      p.reject(new Error(`RPCNode stopped while awaiting reply to msgId=${id}`));
     }
     this.#pending.clear();
   }
@@ -117,14 +124,9 @@ export class RPCNode implements RPCPeer {
 
     let msg;
     while ((msg = this.#recvRing.poll()) !== null) {
-      const payload =
-        msg.payload instanceof Buffer
-          ? new Uint8Array(
-              msg.payload.buffer,
-              msg.payload.byteOffset,
-              msg.payload.byteLength,
-            )
-          : msg.payload;
+      const payload = msg.payload instanceof Buffer
+        ? new Uint8Array(msg.payload.buffer, msg.payload.byteOffset, msg.payload.byteLength)
+        : msg.payload;
 
       switch (msg.msgType) {
         case RPCNode.MSG_CALL:
@@ -145,8 +147,8 @@ export class RPCNode implements RPCPeer {
     let isError = false;
 
     try {
-      const args = decodeAuto(payload);
-      const method = args.method as string;
+      const args    = decodeAuto(payload);
+      const method  = args.method as string;
       const handler = this.#handlers.get(method);
       if (!handler) throw new Error(`Unknown RPC method: '${method}'`);
 
@@ -154,21 +156,26 @@ export class RPCNode implements RPCPeer {
       result = await handler(rest);
     } catch (err: unknown) {
       isError = true;
-      result = err instanceof Error ? err.message : String(err);
+      result  = err instanceof Error ? err.message : String(err);
     }
 
+    // Send REPLY.
     const replyPayload = encodeAuto(
-      isError ? { error: result as string } : { result: result ?? null },
+      isError
+        ? { error: result as string }
+        : { result: result ?? null }
     );
 
     try {
       this.#sendRing.send(RPCNode.MSG_REPLY, replyPayload as any, msgId);
-    } catch {}
+    } catch {
+      // Ring full — caller will time out.
+    }
   }
 
   #handleReply(correlationId: bigint, payload: Uint8Array): void {
     const pending = this.#pending.get(correlationId);
-    if (!pending) return;
+    if (!pending) return; // Stale or unsolicited reply.
 
     clearTimeout(pending.timer);
     this.#pending.delete(correlationId);
@@ -183,16 +190,14 @@ export class RPCNode implements RPCPeer {
 
   #handleEvent(payload: Uint8Array): void {
     try {
-      const obj = decodeAuto(payload);
-      const event = obj.event as string;
+      const obj     = decodeAuto(payload);
+      const event   = obj.event as string;
       const handler = this.#handlers.get(`event:${event}`);
       if (handler) {
         const { event: _, ...rest } = obj;
         void handler(rest);
       }
-    } catch {
-      /* ignore malformed events */
-    }
+    } catch { /* ignore malformed events */ }
   }
 
   onEvent(event: string, handler: Handler): void {

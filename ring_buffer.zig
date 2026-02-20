@@ -1,48 +1,66 @@
+/// universal-ipc-bridge: core/ring_buffer.zig
+/// Lock-free SPMC/MPSC ring buffer over POSIX shared memory.
+/// All fields that are shared across processes use atomic operations.
+
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Atomic = std.atomic.Value;
 
+// ──────────────────────────────────────────────
+// Constants
+// ──────────────────────────────────────────────
+
 pub const MAGIC: u8 = 0x1B;
 pub const PROTOCOL_VERSION: u8 = 0x01;
 pub const CACHE_LINE: usize = 64;
 
+/// Maximum payload that fits in a single slot (bytes).
+/// Chosen so that (HEADER_SIZE + MAX_PAYLOAD) % CACHE_LINE == 0.
 pub const HEADER_SIZE: usize = 32;
-pub const MAX_PAYLOAD: usize = 4096 - HEADER_SIZE;
+pub const MAX_PAYLOAD: usize = 4096 - HEADER_SIZE; // 4 KB slots
 
+/// Number of slots in the ring. MUST be a power of two.
 pub const RING_CAPACITY: usize = 4096;
 
+/// Total shared memory region size.
 pub const SHM_SIZE: usize = @sizeOf(RingHeader) + RING_CAPACITY * @sizeOf(Slot);
 
+/// Default shm name.
 pub const DEFAULT_SHM_NAME: []const u8 = "/uipc_bridge_v1";
 
+// ──────────────────────────────────────────────
+// Wire Types
+// ──────────────────────────────────────────────
+
 pub const MsgType = enum(u8) {
-    call = 0x01,
-    reply = 0x02,
-    event = 0x03,
-    ping = 0x04,
-    pong = 0x05,
+    call    = 0x01,
+    reply   = 0x02,
+    event   = 0x03,
+    ping    = 0x04,
+    pong    = 0x05,
     @"error" = 0xFF,
     _,
 };
 
 pub const SlotState = enum(u8) {
-    free = 0,
-    writing = 1,
-    ready = 2,
-    reading = 3,
+    free     = 0,
+    writing  = 1,
+    ready    = 2,
+    reading  = 3,
 };
 
+/// Flat binary message header — exactly 32 bytes, cache-line friendly.
 pub const MsgHeader = extern struct {
-    magic: u8 = MAGIC,
-    version: u8 = PROTOCOL_VERSION,
-    flags: u16 = 0,
-    payload_len: u32,
-    msg_id: u64,
-    correlation_id: u64 = 0,
-    msg_type: u8,
-    sender_pid: u16,
-    _pad: [5]u8 = [_]u8{0} ** 5,
+    magic:          u8   = MAGIC,
+    version:        u8   = PROTOCOL_VERSION,
+    flags:          u16  = 0,
+    payload_len:    u32,
+    msg_id:         u64,
+    correlation_id: u64  = 0,
+    msg_type:       u8,
+    sender_pid:     u16,
+    _pad:           [5]u8 = [_]u8{0} ** 5,
 
     comptime {
         assert(@sizeOf(MsgHeader) == HEADER_SIZE);
@@ -50,14 +68,16 @@ pub const MsgHeader = extern struct {
     }
 };
 
+/// A single ring slot: header + payload, padded to 4 KB.
 pub const Slot = extern struct {
-    state: u8 align(CACHE_LINE),
-    _pad0: [CACHE_LINE - 1]u8 = [_]u8{0} ** (CACHE_LINE - 1),
-
-    crc32: u32,
-    _pad1: [CACHE_LINE - 4]u8 = [_]u8{0} ** (CACHE_LINE - 4),
-
-    header: MsgHeader,
+    /// Atomic state machine for this slot.
+    state:   u8 align(CACHE_LINE),
+    _pad0:   [CACHE_LINE - 1]u8 = [_]u8{0} ** (CACHE_LINE - 1),
+    /// CRC32 of (header_bytes ++ payload_bytes).
+    crc32:   u32,
+    _pad1:   [CACHE_LINE - 4]u8 = [_]u8{0} ** (CACHE_LINE - 4),
+    /// The actual message.
+    header:  MsgHeader,
     payload: [MAX_PAYLOAD]u8,
 
     comptime {
@@ -65,19 +85,27 @@ pub const Slot = extern struct {
     }
 };
 
+/// The ring control block, placed at offset 0 of the shm region.
+/// head and tail are *byte offsets into the slots array*, always masked.
 pub const RingHeader = extern struct {
-    magic: u64 = 0x555F495043_42524457,
-    version: u32 = 1,
-    capacity: u32 = RING_CAPACITY,
-    slot_size: u32 = @sizeOf(Slot),
-    _pad: [CACHE_LINE - 20]u8 = [_]u8{0} ** (CACHE_LINE - 20),
+    magic:      u64 = 0x555F495043_42524457, // "UIPCBRDW"
+    version:    u32 = 1,
+    capacity:   u32 = RING_CAPACITY,
+    slot_size:  u32 = @sizeOf(Slot),
+    _pad:       [CACHE_LINE - 20]u8 = [_]u8{0} ** (CACHE_LINE - 20),
 
-    head: u64 align(CACHE_LINE) = 0,
-    _pad_head: [CACHE_LINE - 8]u8 = [_]u8{0} ** (CACHE_LINE - 8),
+    /// Producer cursor (head). Written by producers, read by consumers.
+    head:       u64 align(CACHE_LINE) = 0,
+    _pad_head:  [CACHE_LINE - 8]u8   = [_]u8{0} ** (CACHE_LINE - 8),
 
-    tail: u64 align(CACHE_LINE) = 0,
-    _pad_tail: [CACHE_LINE - 8]u8 = [_]u8{0} ** (CACHE_LINE - 8),
+    /// Consumer cursor (tail). Written by consumers, read by producers.
+    tail:       u64 align(CACHE_LINE) = 0,
+    _pad_tail:  [CACHE_LINE - 8]u8   = [_]u8{0} ** (CACHE_LINE - 8),
 };
+
+// ──────────────────────────────────────────────
+// CRC32 (Castagnoli, fast table-based)
+// ──────────────────────────────────────────────
 
 const crc32_table: [256]u32 = blk: {
     var table: [256]u32 = undefined;
@@ -107,20 +135,25 @@ fn slot_crc(slot: *const Slot) u32 {
     const header_bytes = std.mem.asBytes(&slot.header);
     var h = crc32(header_bytes);
     const payload_slice = slot.payload[0..slot.header.payload_len];
-
+    // combine
     for (payload_slice) |byte| {
         h = (h >> 8) ^ crc32_table[(h ^ byte) & 0xFF];
     }
-    return ~h ^ 0xFFFFFFFF;
+    return ~h ^ 0xFFFFFFFF; // finalize the second pass
 }
+
+// ──────────────────────────────────────────────
+// RingBuffer handle
+// ──────────────────────────────────────────────
 
 pub const RingBuffer = struct {
     header: *RingHeader,
-    slots: [*]Slot,
+    slots:  [*]Slot,
     shm_fd: i32,
-    size: usize,
-    name: []const u8,
+    size:   usize,
+    name:   []const u8,
 
+    /// Open or create the shared memory ring.
     pub fn open(name: []const u8, create: bool) !RingBuffer {
         const posix = std.posix;
 
@@ -146,16 +179,18 @@ pub const RingBuffer = struct {
         );
         errdefer posix.munmap(@alignCast(ptr[0..SHM_SIZE]));
 
-        const ring_header: *RingHeader = @ptrCast(@alignCast(ptr));
-        const slots_ptr: [*]Slot = @ptrCast(@alignCast(@as([*]u8, @ptrCast(ptr)) + @sizeOf(RingHeader)));
+        const ring_header: *RingHeader = @alignCast(@ptrCast(ptr));
+        const slots_ptr: [*]Slot = @alignCast(@ptrCast(@as([*]u8, @ptrCast(ptr)) + @sizeOf(RingHeader)));
 
         if (create) {
+            // Initialize the control block atomically.
             ring_header.* = RingHeader{};
             @fence(.seq_cst);
-
+            // Zero all slots.
             @memset(std.mem.asBytes(ring_header)[0..SHM_SIZE], 0);
             ring_header.* = RingHeader{};
         } else {
+            // Verify magic.
             if (ring_header.magic != (RingHeader{}).magic) {
                 return error.InvalidMagic;
             }
@@ -163,10 +198,10 @@ pub const RingBuffer = struct {
 
         return RingBuffer{
             .header = ring_header,
-            .slots = slots_ptr,
+            .slots  = slots_ptr,
             .shm_fd = fd,
-            .size = SHM_SIZE,
-            .name = name,
+            .size   = SHM_SIZE,
+            .name   = name,
         };
     }
 
@@ -179,19 +214,29 @@ pub const RingBuffer = struct {
         std.posix.shm_unlink(self.name) catch {};
     }
 
+    // ──────────────────────────────────────────────
+    // Producer API
+    // ──────────────────────────────────────────────
+
+    /// Try to claim a free slot for writing.
+    /// Returns the slot index, or null if the ring is full.
     pub fn claim(self: *RingBuffer) ?usize {
         const capacity = RING_CAPACITY;
         const mask: u64 = capacity - 1;
 
+        // Load the current head with acquire ordering.
         const head = @atomicLoad(u64, &self.header.head, .acquire);
         const tail = @atomicLoad(u64, &self.header.tail, .acquire);
 
-        if (head - tail >= capacity) return null;
+        if (head - tail >= capacity) return null; // ring full
 
         const idx: usize = @intCast(head & mask);
         const slot = &self.slots[idx];
 
-        const old = @cmpxchgStrong(u8, &slot.state, @intFromEnum(SlotState.free), @intFromEnum(SlotState.writing), .acq_rel, .acquire) orelse {
+        // CAS the slot state from free → writing.
+        const old = @cmpxchgStrong(u8, &slot.state, @intFromEnum(SlotState.free),
+            @intFromEnum(SlotState.writing), .acq_rel, .acquire) orelse {
+            // Success: advance head.
             _ = @atomicRmw(u64, &self.header.head, .Add, 1, .release);
             return idx;
         };
@@ -199,32 +244,38 @@ pub const RingBuffer = struct {
         return null;
     }
 
-    pub fn publish(self: *RingBuffer, idx: usize, msg_type: MsgType, msg_id: u64, correlation_id: u64, payload: []const u8) !void {
+    /// Write a message into a previously claimed slot and mark it ready.
+    pub fn publish(self: *RingBuffer, idx: usize, msg_type: MsgType,
+                   msg_id: u64, correlation_id: u64, payload: []const u8) !void {
         if (payload.len > MAX_PAYLOAD) return error.PayloadTooLarge;
 
         const slot = &self.slots[idx];
         assert(@atomicLoad(u8, &slot.state, .acquire) == @intFromEnum(SlotState.writing));
 
         slot.header = .{
-            .payload_len = @intCast(payload.len),
-            .msg_id = msg_id,
+            .payload_len    = @intCast(payload.len),
+            .msg_id         = msg_id,
             .correlation_id = correlation_id,
-            .msg_type = @intFromEnum(msg_type),
-            .sender_pid = @intCast(std.os.linux.getpid() & 0xFFFF),
+            .msg_type       = @intFromEnum(msg_type),
+            .sender_pid     = @intCast(std.os.linux.getpid() & 0xFFFF),
         };
         @memcpy(slot.payload[0..payload.len], payload);
 
+        // Compute and store CRC.
         const header_bytes = std.mem.asBytes(&slot.header);
         var crc_val: u32 = 0xFFFFFFFF;
         for (header_bytes) |b| crc_val = (crc_val >> 8) ^ crc32_table[(crc_val ^ b) & 0xFF];
         for (payload) |b| crc_val = (crc_val >> 8) ^ crc32_table[(crc_val ^ b) & 0xFF];
         slot.crc32 = ~crc_val;
 
+        // Release the slot to consumers.
         @fence(.release);
         @atomicStore(u8, &slot.state, @intFromEnum(SlotState.ready), .release);
     }
 
-    pub fn send(self: *RingBuffer, msg_type: MsgType, msg_id: u64, correlation_id: u64, payload: []const u8) !void {
+    /// Convenience: claim + publish in one call (single-threaded producer path).
+    pub fn send(self: *RingBuffer, msg_type: MsgType,
+                msg_id: u64, correlation_id: u64, payload: []const u8) !void {
         var retries: usize = 0;
         const idx = while (retries < 1000) : (retries += 1) {
             if (self.claim()) |i| break i;
@@ -233,6 +284,12 @@ pub const RingBuffer = struct {
         try self.publish(idx, msg_type, msg_id, correlation_id, payload);
     }
 
+    // ──────────────────────────────────────────────
+    // Consumer API
+    // ──────────────────────────────────────────────
+
+    /// Try to consume the next ready slot.
+    /// Calls `handler` with a read-only view of the message, then frees the slot.
     pub fn recv(self: *RingBuffer, handler: anytype) !bool {
         const capacity = RING_CAPACITY;
         const mask: u64 = capacity - 1;
@@ -240,41 +297,53 @@ pub const RingBuffer = struct {
         const tail = @atomicLoad(u64, &self.header.tail, .acquire);
         const head = @atomicLoad(u64, &self.header.head, .acquire);
 
-        if (tail == head) return false;
+        if (tail == head) return false; // ring empty
 
         const idx: usize = @intCast(tail & mask);
         const slot = &self.slots[idx];
 
+        // Wait for the producer to mark this slot ready.
         const state = @atomicLoad(u8, &slot.state, .acquire);
         if (state != @intFromEnum(SlotState.ready)) return false;
 
-        _ = @cmpxchgStrong(u8, &slot.state, @intFromEnum(SlotState.ready), @intFromEnum(SlotState.reading), .acq_rel, .acquire) orelse {};
+        // CAS: ready → reading (prevents double-consume in MPMC).
+        _ = @cmpxchgStrong(u8, &slot.state, @intFromEnum(SlotState.ready),
+            @intFromEnum(SlotState.reading), .acq_rel, .acquire) orelse {};
 
         @fence(.acquire);
 
+        // Validate CRC.
         const header_bytes = std.mem.asBytes(&slot.header);
         var crc_val: u32 = 0xFFFFFFFF;
         for (header_bytes) |b| crc_val = (crc_val >> 8) ^ crc32_table[(crc_val ^ b) & 0xFF];
         const payload_slice = slot.payload[0..slot.header.payload_len];
         for (payload_slice) |b| crc_val = (crc_val >> 8) ^ crc32_table[(crc_val ^ b) & 0xFF];
         if (~crc_val != slot.crc32) {
+            // Corrupt slot: release and skip.
             @atomicStore(u8, &slot.state, @intFromEnum(SlotState.free), .release);
             _ = @atomicRmw(u64, &self.header.tail, .Add, 1, .release);
             return error.CRCMismatch;
         }
 
+        // Validate magic & version.
         if (slot.header.magic != MAGIC or slot.header.version != PROTOCOL_VERSION) {
             @atomicStore(u8, &slot.state, @intFromEnum(SlotState.free), .release);
             _ = @atomicRmw(u64, &self.header.tail, .Add, 1, .release);
             return error.InvalidHeader;
         }
 
+        // Deliver to handler.
         try handler.handle(&slot.header, payload_slice);
 
+        // Release slot and advance tail.
         @atomicStore(u8, &slot.state, @intFromEnum(SlotState.free), .release);
         _ = @atomicRmw(u64, &self.header.tail, .Add, 1, .release);
         return true;
     }
+
+    // ──────────────────────────────────────────────
+    // Diagnostics
+    // ──────────────────────────────────────────────
 
     pub fn stats(self: *const RingBuffer) struct { used: u64, free: u64, head: u64, tail: u64 } {
         const h = @atomicLoad(u64, &self.header.head, .acquire);
@@ -283,6 +352,10 @@ pub const RingBuffer = struct {
         return .{ .used = used, .free = RING_CAPACITY - used, .head = h, .tail = t };
     }
 };
+
+// ──────────────────────────────────────────────
+// C-ABI exports (for FFI from Bun/Deno/Node)
+// ──────────────────────────────────────────────
 
 const ExternRing = opaque {};
 
@@ -324,6 +397,8 @@ export fn uipc_send(
     return 0;
 }
 
+/// Poll for one message. Returns 1 if consumed, 0 if empty, -1 on error.
+/// out_header_ptr and out_payload_ptr must point to caller-owned buffers.
 export fn uipc_poll(
     ring_ptr: *ExternRing,
     out_header: *MsgHeader,

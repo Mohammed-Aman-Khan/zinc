@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# scripts/bench.sh — Run all benchmarks and produce a summary report
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

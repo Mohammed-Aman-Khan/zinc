@@ -1,3 +1,10 @@
+// node-addon/src/lib.rs
+//! Universal-IPC Bridge — Node.js N-API addon.
+//!
+//! Exposes a JS class `UIPCRing` that wraps the Zig ring buffer via FFI.
+//! All hot-path operations (send / poll) are synchronous to avoid event-loop
+//! overhead; async variants are provided for blocking wait patterns.
+
 #![deny(clippy::all)]
 #![allow(clippy::missing_safety_doc)]
 
@@ -21,13 +28,15 @@ use napi_derive::napi;
 
 use ffi::msg_type;
 
+// ── Shared ring state ──────────────────────────────────────────────────────
 
 struct RingState {
     ptr:    NonNull<ffi::UIPCRing>,
     msg_id: AtomicU64,
 }
 
-
+// SAFETY: UIPCRing is safe to send across threads; all mutations go through
+// atomic operations and the lock-free ring protocol.
 unsafe impl Send for RingState {}
 unsafe impl Sync for RingState {}
 
@@ -37,7 +46,7 @@ impl Drop for RingState {
     }
 }
 
-
+// ── JS class: UIPCRing ─────────────────────────────────────────────────────
 
 #[napi]
 pub struct UIPCRingHandle {
@@ -46,6 +55,7 @@ pub struct UIPCRingHandle {
 
 #[napi]
 impl UIPCRingHandle {
+    /// `new UIPCRing(name: string, create: boolean)`
     #[napi(constructor)]
     pub fn new(name: String, create: bool) -> Result<Self> {
         let c_name = CString::new(name.clone())
@@ -64,8 +74,9 @@ impl UIPCRingHandle {
         })
     }
 
-    
+    // ── Producer ────────────────────────────────────────────────────────
 
+    /// `send(msgType: number, payload: Buffer, correlationId?: bigint): void`
     #[napi]
     pub fn send(
         &self,
@@ -95,6 +106,8 @@ impl UIPCRingHandle {
         Ok(())
     }
 
+    /// `sendCall(payload: Buffer, correlationId?: bigint): bigint`
+    /// Returns the msg_id so the caller can correlate the reply.
     #[napi]
     pub fn send_call(&self, payload: Buffer, env: Env) -> Result<JsUnknown> {
         let id = self.inner.msg_id.fetch_add(1, Ordering::Relaxed);
@@ -118,6 +131,7 @@ impl UIPCRingHandle {
             .map(|b| b.into_unknown())
     }
 
+    /// Fire-and-forget event.
     #[napi]
     pub fn emit(&self, payload: Buffer) -> Result<()> {
         let id = self.inner.msg_id.fetch_add(1, Ordering::Relaxed);
@@ -138,8 +152,9 @@ impl UIPCRingHandle {
         }
     }
 
-    
+    // ── Consumer ────────────────────────────────────────────────────────
 
+    /// Non-blocking poll. Returns null if empty, else `{header, payload}`.
     #[napi]
     pub fn poll(&self, env: Env) -> Result<JsUnknown> {
         let mut header = ffi::UIPCHeader::default();
@@ -158,7 +173,7 @@ impl UIPCRingHandle {
 
         match rc {
             1 => {
-                
+                // Build JS object { msgType, msgId, correlationId, senderPid, payload }
                 let mut obj = env.create_object()?;
 
                 obj.set_named_property("msgType",       env.create_uint32(header.msg_type as u32)?)?;
@@ -178,13 +193,15 @@ impl UIPCRingHandle {
         }
     }
 
+    /// Async drain: polls until empty, collecting all messages.
+    /// Returns Array<{msgType, msgId, ...}>.
     #[napi]
     pub fn drain(&self, env: Env) -> Result<JsUnknown> {
         let mut results: Vec<JsUnknown> = Vec::new();
 
         loop {
             let msg = self.poll(env)?;
-            
+            // Check if null.
             if matches!(msg.get_type()?, ValueType::Null) {
                 break;
             }
@@ -198,8 +215,11 @@ impl UIPCRingHandle {
         Ok(arr.into_unknown())
     }
 
-    
+    // ── Async: spin-wait for reply ───────────────────────────────────────
 
+    /// Asynchronous: waits (on a libuv worker thread) for a message whose
+    /// correlationId matches `wait_for_id`. Resolves with the message object.
+    /// Times out after `timeout_ms` milliseconds.
     #[napi]
     pub fn wait_for_reply(
         &self,
@@ -214,8 +234,9 @@ impl UIPCRingHandle {
         })
     }
 
-    
+    // ── Helpers ─────────────────────────────────────────────────────────
 
+    /// Returns `{ used: bigint, free: bigint }`.
     #[napi]
     pub fn stats(&self, env: Env) -> Result<JsObject> {
         let mut used: u64 = 0;
@@ -228,18 +249,20 @@ impl UIPCRingHandle {
         Ok(obj)
     }
 
+    /// Unlink the shm segment (call once, on the owning process).
     #[napi]
     pub fn unlink(&self) {
         unsafe { ffi::uipc_unlink(self.inner.ptr.as_ptr()) };
     }
 
+    /// Maximum payload size in bytes.
     #[napi]
     pub fn max_payload_size() -> u32 {
         unsafe { ffi::uipc_max_payload() }
     }
 }
 
-
+// ── Async task: wait for a correlated reply ────────────────────────────────
 
 pub struct WaitTask {
     inner:      Arc<RingState>,
@@ -275,7 +298,7 @@ impl Task for WaitTask {
                 return Ok(None);
             }
 
-            
+            // Back-off: yield to the OS for a microsecond.
             std::hint::spin_loop();
         }
     }
@@ -301,7 +324,7 @@ impl Task for WaitTask {
     }
 }
 
-
+// ── Module constants ───────────────────────────────────────────────────────
 
 #[napi]
 pub const MSG_CALL:  u8 = msg_type::CALL;

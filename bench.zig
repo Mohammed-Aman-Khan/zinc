@@ -1,10 +1,12 @@
+/// core/bench.zig — micro-benchmark: producer/consumer throughput
 const std = @import("std");
-const rb = @import("ring_buffer.zig");
+const rb  = @import("ring_buffer.zig");
 
 const ITERS: u64 = 1_000_000;
 const SHM_NAME = "/uipc_bench_tmp";
 
 pub fn main() !void {
+    // Clean up any leftover segment.
     std.posix.shm_unlink(SHM_NAME) catch {};
 
     var ring = try rb.RingBuffer.open(SHM_NAME, true);
@@ -16,6 +18,7 @@ pub fn main() !void {
     var buf: [256]u8 = undefined;
     @memset(&buf, 0xAB);
 
+    // ── Producer thread ──────────────────────────────────────────────────
     const producer = try std.Thread.spawn(.{}, struct {
         fn run(r: *rb.RingBuffer) void {
             var id: u64 = 1;
@@ -31,6 +34,7 @@ pub fn main() !void {
         }
     }.run, .{&ring});
 
+    // ── Consumer (main thread) ───────────────────────────────────────────
     const Handler = struct {
         count: u64 = 0,
 
@@ -48,9 +52,9 @@ pub fn main() !void {
 
     producer.join();
 
-    const ns = @as(u64, @intCast(t1 - t0));
-    const per = ns / ITERS;
-    const mps = ITERS * 1_000_000_000 / ns;
+    const ns   = @as(u64, @intCast(t1 - t0));
+    const per  = ns / ITERS;
+    const mps  = ITERS * 1_000_000_000 / ns;
 
     std.debug.print(
         \\

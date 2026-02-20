@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# scripts/run-demo.sh — Launch the 3-runtime demo in tmux panes (or sequentially)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -6,6 +7,7 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; NC='\033[0m'
 log() { echo -e "${CYAN}[demo]${NC} $*"; }
 
+# Clean up any stale ring.
 /dev/shm/uipc_demo_ring 2>/dev/null || true
 
 if command -v tmux >/dev/null 2>&1; then

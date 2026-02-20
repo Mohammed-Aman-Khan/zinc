@@ -1,3 +1,10 @@
+/**
+ * tests/security.test.mjs
+ * Tests for the security hardening layer.
+ */
+
+// Inline SecurityGuard (mirrors protocol/security.ts)
+
 const DEFAULT_ALLOWED_TYPES = new Set([0x01, 0x02, 0x03, 0x04, 0x05]);
 
 class SecurityGuard {
@@ -20,21 +27,25 @@ class SecurityGuard {
   verify(msg) {
     const payLen = msg.payload?.length ?? 0;
 
+    // 1. Payload size
     if (payLen > this.#policy.maxPayloadBytes)
       return { allowed: false, reason: `Payload too large: ${payLen}` };
 
+    // 2. Msg type allowlist
     if (!this.#policy.allowedMsgTypes.has(msg.msgType))
       return {
         allowed: false,
         reason: `Disallowed msg_type: 0x${msg.msgType.toString(16)}`,
       };
 
+    // 3. PID allowlist
     if (
       this.#policy.allowedPids.size > 0 &&
       !this.#policy.allowedPids.has(msg.senderPid)
     )
       return { allowed: false, reason: `Disallowed PID: ${msg.senderPid}` };
 
+    // 4. Rate limiting
     const now = Date.now();
     const pid = msg.senderPid;
     const lastRefill = this.#lastRefill.get(pid) ?? now;
@@ -48,6 +59,7 @@ class SecurityGuard {
     this.#buckets.set(pid, tokens - 1);
     this.#lastRefill.set(pid, now);
 
+    // 5. Replay protection
     if (this.#policy.replayProtection && msg.senderPid !== 0) {
       const lastId = this.#seenIds.get(pid) ?? 0n;
       if (msg.msgId <= lastId)
@@ -75,15 +87,17 @@ class SecurityGuard {
   }
 }
 
+// ── Test harness ───────────────────────────────────────────────────────────
+
 let passed = 0,
   failed = 0;
 function test(name, fn) {
   try {
     fn();
-    console.log(`  ✅ ${name}`);
+    console.log(` ${name}`);
     passed++;
   } catch (e) {
-    console.log(`  ❌ ${name}: ${e.message}`);
+    console.log(` ${name}: ${e.message}`);
     failed++;
   }
 }
@@ -174,7 +188,7 @@ test("different PIDs have independent replay state", () => {
   const g = new SecurityGuard();
   g.verify(makeMsg({ senderPid: 1000, msgId: 10n }));
   g.verify(makeMsg({ senderPid: 2000, msgId: 10n }));
-
+  // Both see 10n as their own last — next can be 11n each
   const v1 = g.verify(makeMsg({ senderPid: 1000, msgId: 11n }));
   const v2 = g.verify(makeMsg({ senderPid: 2000, msgId: 11n }));
   assert(v1.allowed, `PID 1000: ${v1.reason}`);
@@ -198,12 +212,12 @@ test("method allowlist: empty set = allow all", () => {
 
 test("rate limiting: exhausts budget then blocks", () => {
   const g = new SecurityGuard({ maxMsgPerSecPerPid: 5 });
-
+  // Send 5 messages (should all pass)
   for (let i = 0; i < 5; i++) {
     const v = g.verify(makeMsg({ senderPid: 42, msgId: BigInt(i + 1) }));
     assert(v.allowed, `msg ${i}: ${v.reason}`);
   }
-
+  // 6th should be rate-limited
   const vOver = g.verify(makeMsg({ senderPid: 42, msgId: 6n }));
   assert(!vOver.allowed);
   assert(vOver.reason.includes("Rate limit"));
@@ -211,11 +225,11 @@ test("rate limiting: exhausts budget then blocks", () => {
 
 test("reset clears all state", () => {
   const g = new SecurityGuard({ maxMsgPerSecPerPid: 1 });
-  g.verify(makeMsg({ msgId: 1n }));
-  g.verify(makeMsg({ msgId: 2n }));
+  g.verify(makeMsg({ msgId: 1n })); // consume budget
+  g.verify(makeMsg({ msgId: 2n })); // consume budget
   g.reset();
-
-  const v = g.verify(makeMsg({ msgId: 1n }));
+  // After reset, budget refills and seqIds clear
+  const v = g.verify(makeMsg({ msgId: 1n })); // msgId 1 again (seqIds reset)
   assert(v.allowed, `After reset: ${v.reason}`);
 });
 
@@ -228,6 +242,8 @@ test("disables replay protection when flag=false", () => {
     "Should allow repeat msgId when replay protection disabled",
   );
 });
+
+// ── Edge cases ─────────────────────────────────────────────────────────────
 
 test("zero-byte payload allowed", () => {
   const g = new SecurityGuard();
@@ -243,6 +259,8 @@ test("one-over-limit payload blocked", () => {
   const g = new SecurityGuard({ maxPayloadBytes: 64 });
   assert(!g.verify(makeMsg({ payload: new Uint8Array(65) })).allowed);
 });
+
+// ── Throughput of the security guard itself ────────────────────────────────
 
 console.log("\n⚡ Security guard throughput...");
 const guard = new SecurityGuard();
