@@ -2,14 +2,14 @@
 const std = @import("std");
 
 pub fn build(b: *std.Build) void {
-    const target   = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
 
     // ── Shared library (the ring-buffer core) ──────────────────────────────
     const lib = b.addSharedLibrary(.{
-        .name    = "uipc_core",
+        .name = "uipc_core",
         .root_source_file = b.path("ring_buffer.zig"),
-        .target  = target,
+        .target = target,
         .optimize = optimize,
         .version = .{ .major = 1, .minor = 0, .patch = 0 },
     });
@@ -22,9 +22,9 @@ pub fn build(b: *std.Build) void {
 
     // ── Static library variant (for embedding in Rust N-API addon) ─────────
     const static_lib = b.addStaticLibrary(.{
-        .name    = "uipc_core_static",
+        .name = "uipc_core_static",
         .root_source_file = b.path("ring_buffer.zig"),
-        .target  = target,
+        .target = target,
         .optimize = optimize,
     });
     static_lib.linkLibC();
@@ -32,9 +32,9 @@ pub fn build(b: *std.Build) void {
 
     // ── Benchmark binary ───────────────────────────────────────────────────
     const bench = b.addExecutable(.{
-        .name    = "uipc_bench",
+        .name = "uipc_bench",
         .root_source_file = b.path("bench.zig"),
-        .target  = target,
+        .target = target,
         .optimize = .ReleaseFast,
     });
     bench.linkLibC();
@@ -43,8 +43,8 @@ pub fn build(b: *std.Build) void {
 
     // ── Unit tests ─────────────────────────────────────────────────────────
     const unit_tests = b.addTest(.{
-        .root_source_file = b.path("ring_buffer.zig"),
-        .target  = target,
+        .root_source_file = b.path("ring_test.zig"),
+        .target = target,
         .optimize = optimize,
     });
     unit_tests.linkLibC();

@@ -21,7 +21,7 @@
     "bun-ffi/**/*.ts",
     "deno-plugin/**/*.ts",
     "protocol/**/*.ts",
-    "demo/**/*.ts",
+    "examples/**/*.ts",
     "tests/**/*.ts"
   ],
   "exclude": ["node_modules", "dist", "core/zig-out"]

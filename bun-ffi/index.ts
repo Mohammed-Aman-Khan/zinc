@@ -14,60 +14,68 @@ import { fileURLToPath } from "node:url";
 // ── Types ──────────────────────────────────────────────────────────────────
 
 export const MSG = {
-  CALL:  0x01,
+  CALL: 0x01,
   REPLY: 0x02,
   EVENT: 0x03,
-  PING:  0x04,
-  PONG:  0x05,
-  ERROR: 0xFF,
+  PING: 0x04,
+  PONG: 0x05,
+  ERROR: 0xff,
 } as const;
 
-export type MsgType = typeof MSG[keyof typeof MSG];
+export type MsgType = (typeof MSG)[keyof typeof MSG];
 
 export interface ReceivedMessage {
-  msgType:       number;
-  msgId:         bigint;
+  msgType: number;
+  msgId: bigint;
   correlationId: bigint;
-  senderPid:     number;
-  payload:       Buffer;
+  senderPid: number;
+  payload: Buffer;
 }
 
 // ── FFI Library definition ─────────────────────────────────────────────────
 
 function loadLib() {
-  const libDir = process.env.UIPC_LIB_DIR
-    ?? join(dirname(fileURLToPath(import.meta.url)), "../core/zig-out/lib");
+  const libDir =
+    process.env.UIPC_LIB_DIR ??
+    join(dirname(fileURLToPath(import.meta.url)), "../core/zig-out/lib");
 
   const libPath = `${libDir}/libuipc_core.so`; // Linux
   // macOS: libuipc_core.dylib
 
   return dlopen(libPath, {
     uipc_open: {
-      args:    [FFIType.cstring, FFIType.u8],
+      args: [FFIType.cstring, FFIType.u8],
       returns: FFIType.ptr,
     },
     uipc_close: {
-      args:    [FFIType.ptr],
+      args: [FFIType.ptr],
       returns: FFIType.void,
     },
     uipc_unlink: {
-      args:    [FFIType.ptr],
+      args: [FFIType.ptr],
       returns: FFIType.void,
     },
     uipc_send: {
-      args:    [FFIType.ptr, FFIType.u8, FFIType.u64, FFIType.u64, FFIType.ptr, FFIType.u32],
+      args: [
+        FFIType.ptr,
+        FFIType.u8,
+        FFIType.u64,
+        FFIType.u64,
+        FFIType.ptr,
+        FFIType.u32,
+      ],
       returns: FFIType.i32,
     },
     uipc_poll: {
-      args:    [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
     },
     uipc_stats: {
-      args:    [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
       returns: FFIType.void,
     },
     uipc_max_payload: {
-      args:    [],
+      args: [],
       returns: FFIType.u32,
     },
   });
@@ -89,41 +97,41 @@ const HEADER_SIZE = 32;
 
 function parseHeader(view: DataView) {
   return {
-    magic:          view.getUint8(0),
-    version:        view.getUint8(1),
-    payloadLen:     view.getUint32(4, true),
-    msgId:          view.getBigUint64(8, true),
-    correlationId:  view.getBigUint64(16, true),
-    msgType:        view.getUint8(24),
-    senderPid:      view.getUint16(25, true),
+    magic: view.getUint8(0),
+    version: view.getUint8(1),
+    payloadLen: view.getUint32(4, true),
+    msgId: view.getBigUint64(8, true),
+    correlationId: view.getBigUint64(16, true),
+    msgType: view.getUint8(24),
+    senderPid: view.getUint16(25, true),
   };
 }
 
 // ── UIPCRing class ─────────────────────────────────────────────────────────
 
 export class UIPCRing {
-  readonly #lib:        ReturnType<typeof loadLib>;
-  readonly #ring:       number;          // opaque pointer
+  readonly #lib: ReturnType<typeof loadLib>;
+  readonly #ring: number; // opaque pointer
   readonly #maxPayload: number;
-  #msgId:               bigint = 1n;
+  #msgId: bigint = 1n;
 
   // Reusable output buffers for the hot poll() path (avoids alloc).
-  readonly #headerBuf:  ArrayBuffer;
+  readonly #headerBuf: ArrayBuffer;
   readonly #payloadBuf: ArrayBuffer;
-  readonly #lenBuf:     ArrayBuffer;     // u32
+  readonly #lenBuf: ArrayBuffer; // u32
 
   constructor(name: string, create: boolean) {
-    this.#lib        = loadLib();
+    this.#lib = loadLib();
     this.#maxPayload = this.#lib.symbols.uipc_max_payload();
 
-    const nameBytes  = Buffer.from(name + "\0");
-    const ringPtr    = this.#lib.symbols.uipc_open(ptr(nameBytes), create ? 1 : 0);
+    const nameBytes = Buffer.from(name + "\0");
+    const ringPtr = this.#lib.symbols.uipc_open(ptr(nameBytes), create ? 1 : 0);
     if (!ringPtr) throw new Error(`Failed to open ring '${name}'`);
-    this.#ring       = ringPtr;
+    this.#ring = ringPtr;
 
-    this.#headerBuf  = new ArrayBuffer(HEADER_SIZE);
+    this.#headerBuf = new ArrayBuffer(HEADER_SIZE);
     this.#payloadBuf = new ArrayBuffer(this.#maxPayload);
-    this.#lenBuf     = new ArrayBuffer(4);
+    this.#lenBuf = new ArrayBuffer(4);
   }
 
   // ── Producer ──────────────────────────────────────────────────────────
@@ -171,19 +179,19 @@ export class UIPCRing {
    * Hot path: uses pre-allocated buffers, zero JS heap allocation.
    */
   poll(): ReceivedMessage | null {
-    const hdrPtr     = ptr(this.#headerBuf);
-    const payPtr     = ptr(this.#payloadBuf);
-    const lenPtr     = ptr(this.#lenBuf);
+    const hdrPtr = ptr(this.#headerBuf);
+    const payPtr = ptr(this.#payloadBuf);
+    const lenPtr = ptr(this.#lenBuf);
 
     const rc = this.#lib.symbols.uipc_poll(this.#ring, hdrPtr, payPtr, lenPtr);
 
     if (rc === 0) return null;
     if (rc === -1) throw new Error("Ring error or CRC mismatch");
 
-    const hdrView    = new DataView(this.#headerBuf);
-    const lenView    = new DataView(this.#lenBuf);
-    const hdr        = parseHeader(hdrView);
-    const payLen     = lenView.getUint32(0, true);
+    const hdrView = new DataView(this.#headerBuf);
+    const lenView = new DataView(this.#lenBuf);
+    const hdr = parseHeader(hdrView);
+    const payLen = lenView.getUint32(0, true);
 
     // Slice the payload without copying (share the underlying ArrayBuffer).
     const payloadSlice = Buffer.from(this.#payloadBuf, 0, payLen);
@@ -191,10 +199,10 @@ export class UIPCRing {
     const payload = Buffer.from(payloadSlice);
 
     return {
-      msgType:       hdr.msgType,
-      msgId:         hdr.msgId,
+      msgType: hdr.msgType,
+      msgId: hdr.msgId,
       correlationId: hdr.correlationId,
-      senderPid:     hdr.senderPid,
+      senderPid: hdr.senderPid,
       payload,
     };
   }
@@ -218,11 +226,17 @@ export class UIPCRing {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
       const msg = this.poll();
-      if (msg && msg.correlationId === correlationId && msg.msgType === MSG.REPLY) {
+      if (
+        msg &&
+        msg.correlationId === correlationId &&
+        msg.msgType === MSG.REPLY
+      ) {
         return msg;
       }
     }
-    throw new Error(`Timeout waiting for reply to correlationId=${correlationId}`);
+    throw new Error(
+      `Timeout waiting for reply to correlationId=${correlationId}`,
+    );
   }
 
   // ── Utilities ──────────────────────────────────────────────────────────
@@ -240,10 +254,14 @@ export class UIPCRing {
     };
   }
 
-  get maxPayloadSize(): number { return this.#maxPayload; }
+  get maxPayloadSize(): number {
+    return this.#maxPayload;
+  }
 
   /** Unlink the shm segment (call once, from the process that created it). */
-  unlink(): void { this.#lib.symbols.uipc_unlink(this.#ring); }
+  unlink(): void {
+    this.#lib.symbols.uipc_unlink(this.#ring);
+  }
 
   /** Detach from the ring and free native resources. */
   close(): void {
@@ -251,7 +269,9 @@ export class UIPCRing {
     this.#lib.close();
   }
 
-  [Symbol.dispose](): void { this.close(); }
+  [Symbol.dispose](): void {
+    this.close();
+  }
 }
 
 // ── Convenience factory ─────────────────────────────────────────────────────

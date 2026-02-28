@@ -1,3 +1,8 @@
+/**
+ * @uipc/node — TypeScript declarations for the Universal-IPC Bridge Node.js addon.
+ * Generated from node-addon/src/lib.rs via napi-rs.
+ */
+
 export declare const MSG_CALL:  number;
 export declare const MSG_REPLY: number;
 export declare const MSG_EVENT: number;
