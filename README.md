@@ -49,14 +49,14 @@ Offset  Size  Field
 
 ## Message Types
 
-| Type | Value | Meaning |
-|------|-------|---------|
-| CALL | 0x01 | RPC call request |
-| REPLY | 0x02 | RPC reply |
-| EVENT | 0x03 | Fire-and-forget event |
-| PING | 0x04 | Heartbeat |
-| PONG | 0x05 | Heartbeat reply |
-| ERROR | 0xFF | Error response |
+| Type  | Value | Meaning               |
+| ----- | ----- | --------------------- |
+| CALL  | 0x01  | RPC call request      |
+| REPLY | 0x02  | RPC reply             |
+| EVENT | 0x03  | Fire-and-forget event |
+| PING  | 0x04  | Heartbeat             |
+| PONG  | 0x05  | Heartbeat reply       |
+| ERROR | 0xFF  | Error response        |
 
 ## Performance Targets
 
@@ -67,6 +67,7 @@ Offset  Size  Field
 ## Building
 
 ### Prerequisites
+
 - Zig 0.13+
 - Rust 1.78+ (stable)
 - Node.js 20+
