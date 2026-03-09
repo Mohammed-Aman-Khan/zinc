@@ -155,8 +155,10 @@ let passed = 0,
 function test(name, fn) {
   try {
     fn();
+    console.log(`  ${name}`);
     passed++;
   } catch (e) {
+    console.log(`  ${name}: ${e.message}`);
     failed++;
   }
 }
