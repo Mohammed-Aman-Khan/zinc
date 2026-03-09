@@ -1,12 +1,20 @@
 {
-  "name": "universal-ipc-bridge",
+  "name": "zinc",
   "version": "0.1.0",
-  "description": "Zero-copy, lock-free IPC between Bun, Node.js, and Deno via POSIX shared memory",
+  "description": "Universal IPC Bridge for JS Runtimes — zero-copy, lock-free communication between Bun, Node.js, and Deno",
   "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": {
+      "bun": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
   "scripts": {
     "build": "bash scripts/build-all.sh",
     "bench": "bash scripts/bench.sh",
     "demo": "bash scripts/run-demo.sh",
+    "quickstart": "bash scripts/quickstart.sh",
     "test": "bun test tests/",
     "test:zig": "cd core && zig build test",
     "typecheck": "tsc --noEmit"
@@ -16,17 +24,33 @@
     "@types/node": "^20.0.0"
   },
   "keywords": [
+    "zinc",
     "ipc",
+    "inter-process-communication",
     "shared-memory",
     "ring-buffer",
+    "lock-free",
+    "zero-copy",
     "bun",
     "deno",
     "nodejs",
+    "cross-runtime",
     "zig",
     "rust",
-    "ffi"
+    "ffi",
+    "napi",
+    "performance",
+    "rpc"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/your-org/zinc"
+  },
+  "bugs": {
+    "url": "https://github.com/your-org/zinc/issues"
+  },
+  "homepage": "https://github.com/your-org/zinc#readme",
   "engines": {
     "node": ">=20.0.0",
     "bun": ">=1.1.0"

@@ -48,11 +48,11 @@ export interface SecurityPolicy {
 }
 
 export interface IncomingMsg {
-  msgType:       number;
-  msgId:         bigint;
+  msgType: number;
+  msgId: bigint;
   correlationId: bigint;
-  senderPid:     number;
-  payload:       Uint8Array | Buffer;
+  senderPid: number;
+  payload: Uint8Array | Buffer;
 }
 
 export interface SecurityVerdict {
@@ -64,21 +64,21 @@ const DEFAULT_ALLOWED_TYPES = new Set([0x01, 0x02, 0x03, 0x04, 0x05]);
 const DEC = new TextDecoder();
 
 export class SecurityGuard {
-  readonly #policy:     Required<SecurityPolicy>;
+  readonly #policy: Required<SecurityPolicy>;
   /** Last seen msgId per PID — for monotonicity check. */
-  readonly #seenIds:    Map<number, bigint> = new Map();
+  readonly #seenIds: Map<number, bigint> = new Map();
   /** Token bucket: tokens per PID (refills each second). */
-  readonly #buckets:    Map<number, number> = new Map();
+  readonly #buckets: Map<number, number> = new Map();
   readonly #lastRefill: Map<number, number> = new Map();
 
   constructor(policy: SecurityPolicy = {}) {
     this.#policy = {
-      maxPayloadBytes:   policy.maxPayloadBytes   ?? 4064,
-      allowedPids:       policy.allowedPids        ?? new Set(),     // empty = any
-      maxMsgPerSecPerPid:policy.maxMsgPerSecPerPid ?? 100_000,
-      allowedMsgTypes:   policy.allowedMsgTypes    ?? DEFAULT_ALLOWED_TYPES,
-      allowedMethods:    policy.allowedMethods      ?? new Set(),    // empty = any
-      replayProtection:  policy.replayProtection    ?? true,
+      maxPayloadBytes: policy.maxPayloadBytes ?? 4064,
+      allowedPids: policy.allowedPids ?? new Set(), // empty = any
+      maxMsgPerSecPerPid: policy.maxMsgPerSecPerPid ?? 100_000,
+      allowedMsgTypes: policy.allowedMsgTypes ?? DEFAULT_ALLOWED_TYPES,
+      allowedMethods: policy.allowedMethods ?? new Set(), // empty = any
+      replayProtection: policy.replayProtection ?? true,
     };
   }
 
@@ -86,17 +86,29 @@ export class SecurityGuard {
     // 1. Payload size
     const payLen = msg.payload.length ?? (msg.payload as Buffer).byteLength;
     if (payLen > this.#policy.maxPayloadBytes) {
-      return { allowed: false, reason: `Payload too large: ${payLen} > ${this.#policy.maxPayloadBytes}` };
+      return {
+        allowed: false,
+        reason: `Payload too large: ${payLen} > ${this.#policy.maxPayloadBytes}`,
+      };
     }
 
     // 2. Message type allowlist
     if (!this.#policy.allowedMsgTypes.has(msg.msgType)) {
-      return { allowed: false, reason: `Disallowed msg_type: 0x${msg.msgType.toString(16)}` };
+      return {
+        allowed: false,
+        reason: `Disallowed msg_type: 0x${msg.msgType.toString(16)}`,
+      };
     }
 
     // 3. PID allowlist (skip if set is empty)
-    if (this.#policy.allowedPids.size > 0 && !this.#policy.allowedPids.has(msg.senderPid)) {
-      return { allowed: false, reason: `Disallowed sender PID: ${msg.senderPid}` };
+    if (
+      this.#policy.allowedPids.size > 0 &&
+      !this.#policy.allowedPids.has(msg.senderPid)
+    ) {
+      return {
+        allowed: false,
+        reason: `Disallowed sender PID: ${msg.senderPid}`,
+      };
     }
 
     // 4. Rate limiting (token bucket)
@@ -104,8 +116,9 @@ export class SecurityGuard {
     const pid = msg.senderPid;
     const lastRefill = this.#lastRefill.get(pid) ?? now;
     const elapsed = (now - lastRefill) / 1000; // seconds
-    let tokens = (this.#buckets.get(pid) ?? this.#policy.maxMsgPerSecPerPid)
-      + elapsed * this.#policy.maxMsgPerSecPerPid;
+    let tokens =
+      (this.#buckets.get(pid) ?? this.#policy.maxMsgPerSecPerPid) +
+      elapsed * this.#policy.maxMsgPerSecPerPid;
     tokens = Math.min(tokens, this.#policy.maxMsgPerSecPerPid);
     if (tokens < 1) {
       return { allowed: false, reason: `Rate limit exceeded for PID ${pid}` };
@@ -117,7 +130,10 @@ export class SecurityGuard {
     if (this.#policy.replayProtection && msg.senderPid !== 0) {
       const lastId = this.#seenIds.get(pid) ?? 0n;
       if (msg.msgId <= lastId) {
-        return { allowed: false, reason: `Replay detected: msgId ${msg.msgId} <= last ${lastId} from PID ${pid}` };
+        return {
+          allowed: false,
+          reason: `Replay detected: msgId ${msg.msgId} <= last ${lastId} from PID ${pid}`,
+        };
       }
       this.#seenIds.set(pid, msg.msgId);
     }
@@ -155,7 +171,7 @@ export class SecurityGuard {
 // ── Convenience: wrap a ring poll with security checks ─────────────────────
 
 export type SecureRecvResult =
-  | { ok: true;  msg: IncomingMsg }
+  | { ok: true; msg: IncomingMsg }
   | { ok: false; reason: string };
 
 export function secureFilter(

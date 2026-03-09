@@ -9,18 +9,18 @@ const DEFAULT_ALLOWED_TYPES = new Set([0x01, 0x02, 0x03, 0x04, 0x05]);
 
 class SecurityGuard {
   #policy;
-  #seenIds  = new Map();
-  #buckets  = new Map();
+  #seenIds = new Map();
+  #buckets = new Map();
   #lastRefill = new Map();
 
   constructor(policy = {}) {
     this.#policy = {
-      maxPayloadBytes:    policy.maxPayloadBytes    ?? 4064,
-      allowedPids:        policy.allowedPids         ?? new Set(),
-      maxMsgPerSecPerPid: policy.maxMsgPerSecPerPid  ?? 100_000,
-      allowedMsgTypes:    policy.allowedMsgTypes      ?? DEFAULT_ALLOWED_TYPES,
-      allowedMethods:     policy.allowedMethods       ?? new Set(),
-      replayProtection:   policy.replayProtection     ?? true,
+      maxPayloadBytes: policy.maxPayloadBytes ?? 4064,
+      allowedPids: policy.allowedPids ?? new Set(),
+      maxMsgPerSecPerPid: policy.maxMsgPerSecPerPid ?? 100_000,
+      allowedMsgTypes: policy.allowedMsgTypes ?? DEFAULT_ALLOWED_TYPES,
+      allowedMethods: policy.allowedMethods ?? new Set(),
+      replayProtection: policy.replayProtection ?? true,
     };
   }
 
@@ -33,10 +33,16 @@ class SecurityGuard {
 
     // 2. Msg type allowlist
     if (!this.#policy.allowedMsgTypes.has(msg.msgType))
-      return { allowed: false, reason: `Disallowed msg_type: 0x${msg.msgType.toString(16)}` };
+      return {
+        allowed: false,
+        reason: `Disallowed msg_type: 0x${msg.msgType.toString(16)}`,
+      };
 
     // 3. PID allowlist
-    if (this.#policy.allowedPids.size > 0 && !this.#policy.allowedPids.has(msg.senderPid))
+    if (
+      this.#policy.allowedPids.size > 0 &&
+      !this.#policy.allowedPids.has(msg.senderPid)
+    )
       return { allowed: false, reason: `Disallowed PID: ${msg.senderPid}` };
 
     // 4. Rate limiting
@@ -44,8 +50,9 @@ class SecurityGuard {
     const pid = msg.senderPid;
     const lastRefill = this.#lastRefill.get(pid) ?? now;
     const elapsed = (now - lastRefill) / 1000;
-    let tokens = (this.#buckets.get(pid) ?? this.#policy.maxMsgPerSecPerPid)
-      + elapsed * this.#policy.maxMsgPerSecPerPid;
+    let tokens =
+      (this.#buckets.get(pid) ?? this.#policy.maxMsgPerSecPerPid) +
+      elapsed * this.#policy.maxMsgPerSecPerPid;
     tokens = Math.min(tokens, this.#policy.maxMsgPerSecPerPid);
     if (tokens < 1)
       return { allowed: false, reason: `Rate limit exceeded for PID ${pid}` };
@@ -56,7 +63,10 @@ class SecurityGuard {
     if (this.#policy.replayProtection && msg.senderPid !== 0) {
       const lastId = this.#seenIds.get(pid) ?? 0n;
       if (msg.msgId <= lastId)
-        return { allowed: false, reason: `Replay: msgId ${msg.msgId} <= ${lastId}` };
+        return {
+          allowed: false,
+          reason: `Replay: msgId ${msg.msgId} <= ${lastId}`,
+        };
       this.#seenIds.set(pid, msg.msgId);
     }
 
@@ -70,30 +80,41 @@ class SecurityGuard {
     return { allowed: true };
   }
 
-  reset() { this.#seenIds.clear(); this.#buckets.clear(); this.#lastRefill.clear(); }
+  reset() {
+    this.#seenIds.clear();
+    this.#buckets.clear();
+    this.#lastRefill.clear();
+  }
 }
 
 // ── Test harness ───────────────────────────────────────────────────────────
 
-let passed = 0, failed = 0;
+let passed = 0,
+  failed = 0;
 function test(name, fn) {
-  try { fn(); console.log(`  ✅ ${name}`); passed++; }
-  catch(e) { console.log(`  ❌ ${name}: ${e.message}`); failed++; }
+  try {
+    fn();
+    passed++;
+  } catch (e) {
+    failed++;
+  }
 }
-function assert(cond, msg = "assertion failed") { if (!cond) throw new Error(msg); }
+function assert(cond, msg = "assertion failed") {
+  if (!cond) throw new Error(msg);
+}
 
 function makeMsg(overrides = {}) {
   return {
-    msgType:       0x01,
-    msgId:         1n,
+    msgType: 0x01,
+    msgId: 1n,
     correlationId: 0n,
-    senderPid:     1234,
-    payload:       new Uint8Array(100),
+    senderPid: 1234,
+    payload: new Uint8Array(100),
     ...overrides,
   };
 }
 
-console.log("\n🔐 Security Guard Tests\n");
+console.log("\n Security Guard Tests\n");
 
 test("allows a normal message", () => {
   const g = new SecurityGuard();
@@ -110,7 +131,7 @@ test("blocks oversized payload", () => {
 
 test("blocks disallowed msg_type", () => {
   const g = new SecurityGuard({ allowedMsgTypes: new Set([0x01, 0x02]) });
-  const v = g.verify(makeMsg({ msgType: 0xAA }));
+  const v = g.verify(makeMsg({ msgType: 0xaa }));
   assert(!v.allowed);
   assert(v.reason.includes("msg_type"));
 });
@@ -174,7 +195,7 @@ test("different PIDs have independent replay state", () => {
 
 test("method allowlist: blocks disallowed method", () => {
   const g = new SecurityGuard({ allowedMethods: new Set(["ping", "add"]) });
-  const vOk  = g.verifyMethod("ping");
+  const vOk = g.verifyMethod("ping");
   const vBad = g.verifyMethod("exec");
   assert(vOk.allowed);
   assert(!vBad.allowed);
@@ -214,7 +235,10 @@ test("disables replay protection when flag=false", () => {
   const g = new SecurityGuard({ replayProtection: false });
   g.verify(makeMsg({ msgId: 5n }));
   const v = g.verify(makeMsg({ msgId: 5n }));
-  assert(v.allowed, "Should allow repeat msgId when replay protection disabled");
+  assert(
+    v.allowed,
+    "Should allow repeat msgId when replay protection disabled",
+  );
 });
 
 // ── Edge cases ─────────────────────────────────────────────────────────────
@@ -236,17 +260,26 @@ test("one-over-limit payload blocked", () => {
 
 // ── Throughput of the security guard itself ────────────────────────────────
 
-console.log("\n⚡ Security guard throughput...");
+console.log("\n Security guard throughput...");
 const guard = new SecurityGuard();
 const ITERS = 200_000;
 const t0 = performance.now();
 for (let i = 0; i < ITERS; i++) {
-  guard.verify(makeMsg({ senderPid: i % 100, msgId: BigInt(Math.floor(i / 100) * 100 + (i % 100) + 1) }));
+  guard.verify(
+    makeMsg({
+      senderPid: i % 100,
+      msgId: BigInt(Math.floor(i / 100) * 100 + (i % 100) + 1),
+    }),
+  );
 }
 const elapsed = performance.now() - t0;
-console.log(`   ${ITERS.toLocaleString()} verifications in ${elapsed.toFixed(1)}ms`);
-console.log(`   = ${(ITERS / (elapsed / 1000) / 1e6).toFixed(2)}M verifications/sec`);
-console.log(`   = ${(elapsed / ITERS * 1e6).toFixed(0)}ns per check`);
+console.log(
+  `   ${ITERS.toLocaleString()} verifications in ${elapsed.toFixed(1)}ms`,
+);
+console.log(
+  `   = ${(ITERS / (elapsed / 1000) / 1e6).toFixed(2)}M verifications/sec`,
+);
+console.log(`   = ${((elapsed / ITERS) * 1e6).toFixed(0)}ns per check`);
 
-console.log(`\n📊 Results: ${passed} passed, ${failed} failed\n`);
+console.log(`\n Results: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

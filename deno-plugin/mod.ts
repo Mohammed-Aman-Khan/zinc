@@ -1,9 +1,13 @@
 /**
  * deno-plugin/mod.ts
- * Universal-IPC Bridge — Deno runtime adapter.
+ * Zinc — Universal IPC Bridge for JS Runtimes
+ * Deno runtime adapter (internal).
  *
- * Uses Deno.dlopen (--unstable-ffi) to call the Zig shared library.
- * Permission required: --allow-ffi --allow-read
+ * Uses Deno.dlopen to call the Zig shared library directly.
+ * Permissions required: --allow-ffi --allow-env
+ *
+ * This file is an internal adapter. Use `import { serve, connect } from 'zinc'`
+ * for the developer-friendly high-level API.
  */
 
 // ── FFI symbols ────────────────────────────────────────────────────────────
@@ -11,7 +15,8 @@
 const HEADER_SIZE = 32;
 
 function getLibPath(): string {
-  const override = Deno.env.get("UIPC_LIB_DIR");
+  // ZINC_LIB_DIR takes priority; UIPC_LIB_DIR kept for backward compatibility.
+  const override = Deno.env.get("ZINC_LIB_DIR") ?? Deno.env.get("UIPC_LIB_DIR");
   const base =
     override ?? new URL("../core/zig-out/lib", import.meta.url).pathname;
   const suffix = Deno.build.os === "darwin" ? "dylib" : "so";

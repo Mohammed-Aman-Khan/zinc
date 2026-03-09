@@ -1,9 +1,12 @@
 {
-  "name": "@uipc/deno",
+  "name": "@zinc/core",
   "version": "0.1.0",
-  "exports": "./deno-plugin/mod.ts",
+  "exports": "./src/index.ts",
   "tasks": {
-    "demo": "deno run --allow-ffi --allow-env examples/deno_client.ts",
+    "quickstart:server": "deno run --allow-ffi --allow-env examples/quickstart/server.ts",
+    "quickstart:client": "deno run --allow-ffi --allow-env examples/quickstart/client.ts",
+    "demo:server": "deno run --allow-ffi --allow-env examples/bun_server.ts",
+    "demo:client": "deno run --allow-ffi --allow-env examples/deno_client.ts",
     "test": "deno test --allow-ffi --allow-env tests/",
     "bench": "deno bench --allow-ffi --allow-env"
   },

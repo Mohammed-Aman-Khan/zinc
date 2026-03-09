@@ -1,79 +1,52 @@
 /**
- * demo/deno_client.ts
- * Deno client connecting to the Bun-created ring.
+ * examples/deno_client.ts
+ * Zinc — Universal IPC Bridge for JS Runtimes
  *
- * Run (after bun_server.ts is running):
- *   deno run --allow-ffi --allow-env demo/deno_client.ts
+ * Demo client (Deno). Connects to the demo server running in any runtime.
+ *
+ * Run (server must be running first):
+ *   deno run --allow-ffi --allow-env examples/deno_client.ts
+ *
+ * For a simpler quickstart, see examples/quickstart/.
  */
 
-import { connectRing, MSG } from "../deno-plugin/mod.ts";
-import {
-  encode,
-  decode,
-  encodeAuto,
-  decodeAuto,
-  v,
-} from "../protocol/flat_msg.ts";
+import { connect } from "../src/index.ts";
 
-const RING_NAME = "/uipc_demo_ring";
+console.log("🦕 Zinc — Demo Client (Deno)");
+console.log("   Channel: demo-channel\n");
 
-console.log("🦕 Universal-IPC Bridge — Deno Client");
-console.log(`   Ring: ${RING_NAME}\n`);
+const client = await connect("demo-channel");
 
-const ring = connectRing(RING_NAME);
+try {
+  console.log(" Calling server from Deno...\n");
 
-// ── Tiny inline RPC client ────────────────────────────────────────────────
+  const pong = await client.call("ping");
+  console.log(`  ping        → ${pong}`);
 
-let msgIdCounter = 1n;
+  const sum = await client.call("add", { a: 7, b: 35 });
+  console.log(`  add(7, 35)  → ${sum}`);
 
-async function call(
-  method: string,
-  args: Record<string, unknown> = {},
-  timeoutMs = 5000,
-): Promise<unknown> {
-  const payload = encodeAuto({ method, ...args });
-  const msgId = ring.send(MSG.CALL, payload);
+  const echo = await client.call("echo", { message: "Hello from Deno!" });
+  console.log(`  echo        → "${echo}"`);
 
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    const msg = ring.poll();
-    if (msg && msg.msgType === MSG.REPLY && msg.correlationId === msgId) {
-      const obj = decodeAuto(msg.payload);
-      if ("error" in obj) throw new Error(obj.error as string);
-      return obj.result;
-    }
-    await new Promise((r) => setTimeout(r, 0)); // yield
-  }
-  throw new Error(`RPC timeout: ${method}`);
+  const fib = await client.call("fibonacci", { n: 15 });
+  console.log(`  fibonacci(15) → ${fib}`);
+
+  client.emit("log", { level: "info", message: "Deno client connected!" });
+  console.log(`  emit log    ✓`);
+
+  // Throughput test.
+  const N = 500;
+  console.log(`\n   Throughput: ${N} concurrent calls...`);
+  const t0 = performance.now();
+  await Promise.all(
+    Array.from({ length: N }, (_, i) => client.call("add", { a: i, b: i * 2 })),
+  );
+  const elapsed = performance.now() - t0;
+  console.log(`     ${N} calls in ${elapsed.toFixed(1)}ms`);
+  console.log(`     = ${((N / elapsed) * 1000).toFixed(0)} calls/sec`);
+
+  console.log("\n Deno client done.\n");
+} finally {
+  client.close();
 }
-
-// ── Main ─────────────────────────────────────────────────────────────────
-
-console.log("📡 Calling bun_server from Deno...\n");
-
-const pong = await call("ping");
-console.log(`  ping → ${pong}`);
-
-const sum = await call("add", { a: 7, b: 35 });
-console.log(`  add(7, 35) → ${sum}`);
-
-const echo = await call("echo", { message: "Hello from Deno!" });
-console.log(`  echo → "${echo}"`);
-
-const fib = await call("fibonacci", { n: 15 });
-console.log(`  fibonacci(15) → ${fib}`);
-
-// Throughput test.
-console.log("\n  ⚡ Throughput test (500 sequential calls)...");
-const t0 = performance.now();
-const N = 500;
-for (let i = 0; i < N; i++) {
-  await call("add", { a: i, b: i * 2 });
-}
-const elapsed = performance.now() - t0;
-console.log(`     ${N} sequential calls in ${elapsed.toFixed(1)}ms`);
-console.log(`     = ${(N / (elapsed / 1000)).toFixed(0)} calls/sec`);
-
-console.log("\n✅ Deno client done.\n");
-
-ring.close();

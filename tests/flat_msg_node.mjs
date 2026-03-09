@@ -174,10 +174,10 @@ let passed = 0,
 function test(name, fn) {
   try {
     fn();
-    console.log(`  ✅ ${name}`);
+    console.log(`   ${name}`);
     passed++;
   } catch (e) {
-    console.log(`  ❌ ${name}: ${e.message}`);
+    console.log(`   ${name}: ${e.message}`);
     failed++;
   }
 }
@@ -186,7 +186,7 @@ function eq(a, b) {
     throw new Error(`Expected ${JSON.stringify(b)}, got ${JSON.stringify(a)}`);
 }
 
-console.log("\n📦 FlatMsg encode/decode tests (Node.js)\n");
+console.log("\n FlatMsg encode/decode tests (Node.js)\n");
 
 test("u32 roundtrip", () => {
   const d = decode(encode({ x: v.u32(42) }));
@@ -269,7 +269,7 @@ test("200 fields (uint8 field_count max is 255)", () => {
 
 // ── Throughput bench ──────────────────────────────────────────────────────────
 
-console.log("\n⚡ Serialization throughput...");
+console.log("\n Serialization throughput...");
 const benchMsg = {
   method: v.str("add"),
   a: v.u32(40),
@@ -294,5 +294,5 @@ console.log(
 );
 console.log(`   Wire size: ${enc.length} bytes`);
 
-console.log(`\n📊 Results: ${passed} passed, ${failed} failed\n`);
+console.log(`\n Results: ${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

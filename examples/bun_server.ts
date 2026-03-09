@@ -1,90 +1,66 @@
 /**
- * demo/bun_server.ts
- * Bun process: creates the ring, registers RPC handlers,
- * and serves calls from Node.js and Deno clients.
+ * examples/bun_server.ts
+ * Zinc — Universal IPC Bridge for JS Runtimes
+ *
+ * Demo server (Bun). Accepts calls from any runtime — Node.js, Deno, or Bun.
  *
  * Run:
- *   bun run demo/bun_server.ts
+ *   bun run examples/bun_server.ts
+ *
+ * Then in another terminal run one of:
+ *   bun  run examples/deno_client.ts    (or use deno run ...)
+ *   node --import tsx/esm examples/node_client.mjs
+ *
+ * For a simpler quickstart, see examples/quickstart/.
  */
 
-import { createRing } from "../bun-ffi/index.ts";
-import { RPCNode } from "../protocol/rpc.ts";
-import { encode, v } from "../protocol/flat_msg.ts";
+import { serve } from "../src/index.ts";
+import process from "node:process";
 
-const RING_NAME = "/uipc_demo_ring";
+console.log(" Zinc — Demo Server (Bun)");
+console.log("   Channel: demo-channel\n");
 
-console.log("⚡ Universal-IPC Bridge — Bun Server");
-console.log(`   Ring: ${RING_NAME}\n`);
+const server = await serve("demo-channel");
 
-const ring = createRing(RING_NAME);
+server
+  .handle("ping", () => "pong")
 
-// Register cleanup on exit.
+  .handle("add", ({ a, b }) => {
+    const result = (a as number) + (b as number);
+    console.log(`  [handler] add(${a}, ${b}) = ${result}`);
+    return result;
+  })
+
+  .handle("echo", ({ message }) => {
+    console.log(`  [handler] echo: ${message}`);
+    return message;
+  })
+
+  .handle("fibonacci", ({ n }) => {
+    const fib = (x: number): number => (x <= 1 ? x : fib(x - 1) + fib(x - 2));
+    const result = fib(n as number);
+    console.log(`  [handler] fibonacci(${n}) = ${result}`);
+    return result;
+  })
+
+  .handle("bulk_sum", ({ values }) => {
+    const arr = values as number[];
+    const result = arr.reduce((a, b) => a + b, 0);
+    console.log(`  [handler] bulk_sum(${arr.length} items) = ${result}`);
+    return result;
+  })
+
+  .onEvent("log", ({ level, message }) => {
+    console.log(`  [event:log] [${level}] ${message}`);
+  });
+
+console.log(" Server ready. Waiting for calls. Press Ctrl+C to stop.\n");
+
 process.on("SIGINT", () => {
-  ring.unlink();
-  ring.close();
+  server.close();
   process.exit(0);
 });
 process.on("SIGTERM", () => {
-  ring.unlink();
-  ring.close();
+  server.close();
   process.exit(0);
 });
-
-// Wrap the ring in the RPC layer.
-const rpc = new RPCNode(ring as any);
-
-// ── Register handlers ────────────────────────────────────────────────────
-
-rpc.register("ping", () => "pong");
-
-rpc.register("add", ({ a, b }) => {
-  const result = (a as number) + (b as number);
-  console.log(`  [handler] add(${a}, ${b}) = ${result}`);
-  return result;
-});
-
-rpc.register("echo", ({ message }) => {
-  console.log(`  [handler] echo: ${message}`);
-  return message;
-});
-
-rpc.register("fibonacci", ({ n }) => {
-  const fib = (x: number): number => (x <= 1 ? x : fib(x - 1) + fib(x - 2));
-  const result = fib(n as number);
-  console.log(`  [handler] fibonacci(${n}) = ${result}`);
-  return result;
-});
-
-rpc.register("stats", () => {
-  const s = ring.stats();
-  return { used: s.used.toString(), free: s.free.toString() };
-});
-
-rpc.register("bulk_sum", ({ values }) => {
-  const arr = values as number[];
-  const result = arr.reduce((a, b) => a + b, 0);
-  console.log(`  [handler] bulk_sum(${arr.length} items) = ${result}`);
-  return result;
-});
-
-// ── Listen for events ────────────────────────────────────────────────────
-
-rpc.onEvent("log", ({ level, message }) => {
-  console.log(`  [event:log] [${level}] ${message}`);
-});
-
-// ── Start polling ────────────────────────────────────────────────────────
-
-rpc.start(0); // poll as fast as possible
-
-console.log("✅ Server ready. Waiting for calls...\n");
-console.log("   Stats:", ring.stats());
-console.log();
-
-// Keep the process alive.
-setInterval(() => {
-  const s = ring.stats();
-  if (s.used > 0n) {
-    console.log(`  [monitor] Ring: used=${s.used} free=${s.free}`);
-  }
-}, 1000);

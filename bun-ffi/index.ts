@@ -1,15 +1,21 @@
 /**
  * bun-ffi/index.ts
- * Universal-IPC Bridge — Bun runtime adapter.
+ * Zinc — Universal IPC Bridge for JS Runtimes
+ * Bun runtime adapter (internal).
  *
  * Uses `bun:ffi` to call the Zig shared library directly, mapping
- * the shm ring buffer into Bun's V8-less JSC heap.
- * No event-loop entry. No serialization overhead. Pure RAM speed.
+ * the shm ring buffer into Bun's JSC heap.
+ * No event-loop overhead. No serialization copies. Pure RAM speed.
+ *
+ * This file is an internal adapter. Use `import { serve, connect } from 'zinc'`
+ * for the developer-friendly high-level API.
  */
 
-import { dlopen, FFIType, ptr, toBuffer, type Library } from "bun:ffi";
+import { dlopen, FFIType, ptr } from "bun:ffi";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import process from "node:process";
+import { Buffer } from "node:buffer";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -36,11 +42,13 @@ export interface ReceivedMessage {
 
 function loadLib() {
   const libDir =
-    process.env.UIPC_LIB_DIR ??
+    process.env.ZINC_LIB_DIR ??
+    process.env.UIPC_LIB_DIR ?? // backward-compat alias
     join(dirname(fileURLToPath(import.meta.url)), "../core/zig-out/lib");
 
-  const libPath = `${libDir}/libuipc_core.so`; // Linux
-  // macOS: libuipc_core.dylib
+  // Resolve platform-specific shared library extension.
+  const ext = process.platform === "darwin" ? "dylib" : "so";
+  const libPath = `${libDir}/libuipc_core.${ext}`;
 
   return dlopen(libPath, {
     uipc_open: {

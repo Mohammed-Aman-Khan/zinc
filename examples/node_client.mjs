@@ -1,11 +1,21 @@
 /**
- * demo/node_client.mjs
- * Node.js client: connects to the Bun-created ring and makes RPC calls.
+ * examples/node_client.mjs
+ * Zinc — Universal IPC Bridge for JS Runtimes
  *
- * Run (after bun_server is running):
- *   node demo/node_client.mjs
+ * Node.js demo client — low-level example using the Rust N-API addon directly.
  *
- * Requires the Rust N-API addon to be built:
+ * For the high-level Zinc API (recommended), use TypeScript and run:
+ *   node --import tsx/esm examples/quickstart/client.ts
+ * Or install tsx globally: npm i -g tsx
+ *
+ * This file exists as a plain-JS reference for environments where a TypeScript
+ * loader is not available. It bypasses the Zinc abstraction layer and calls the
+ * N-API addon directly — which is exactly what Zinc does under the hood.
+ *
+ * Run (after bun_server.ts or quickstart/server.ts is running):
+ *   node examples/node_client.mjs
+ *
+ * Requires the Rust N-API addon to be built first:
  *   cd node-addon && cargo build --release
  */
 
@@ -21,11 +31,12 @@ const addonPath = join(
   __dirname,
   "../node-addon/target/release/uipc_node.node",
 );
-const { UIPCRingHandle, MSG_CALL, MSG_REPLY, MSG_EVENT } = require(addonPath);
+const { UIPCRingHandle, MSG_REPLY } = require(addonPath);
 
-const RING_NAME = "/uipc_demo_ring";
+// Zinc normalises channel names to POSIX shm names with /zinc- prefix.
+const RING_NAME = "/zinc-demo-channel";
 
-console.log("🟢 Universal-IPC Bridge — Node.js Client");
+console.log("🟢 Zinc — Demo Client (Node.js, low-level)");
 console.log(`   Ring: ${RING_NAME}\n`);
 
 // ── Minimal RPC helper (mirrors protocol/rpc.ts but in plain CJS) ─────────
@@ -33,17 +44,12 @@ console.log(`   Ring: ${RING_NAME}\n`);
 class NodeRPCClient {
   #ring;
   #pending = new Map();
-  #msgIdCounter = 1n;
   #poll;
 
   constructor(ring) {
     this.#ring = ring;
     // Start polling.
     this.#poll = setInterval(() => this.#tick(), 1);
-  }
-
-  #nextId() {
-    return this.#msgIdCounter++;
   }
 
   call(method, args = {}, timeoutMs = 5000) {
@@ -217,7 +223,7 @@ class NodeRPCClient {
   const client = new NodeRPCClient(ring);
 
   try {
-    console.log("📡 Calling bun_server from Node.js...\n");
+    console.log(" Calling bun_server from Node.js...\n");
 
     // Ping
     const pong = await client.call("ping");
@@ -236,7 +242,7 @@ class NodeRPCClient {
     console.log(`  fibonacci(20) → ${fib}`);
 
     // Throughput test
-    console.log("\n  ⚡ Throughput test (1000 calls)...");
+    console.log("\n   Throughput test (1000 calls)...");
     const t0 = performance.now();
     const N = 1000;
     const jobs = [];
@@ -248,7 +254,7 @@ class NodeRPCClient {
     console.log(`     ${N} round-trips in ${elapsed.toFixed(1)}ms`);
     console.log(`     = ${(N / (elapsed / 1000)).toFixed(0)} calls/sec`);
 
-    console.log("\n✅ Node.js client done.\n");
+    console.log("\n Node.js client done.\n");
   } finally {
     client.stop();
     ring.close();
