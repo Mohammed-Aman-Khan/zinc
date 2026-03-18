@@ -1,14 +1,7 @@
 /**
- * bun-ffi/index.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
- * Bun runtime adapter (internal).
- *
- * Uses `bun:ffi` to call the Zig shared library directly, mapping
- * the shm ring buffer into Bun's JSC heap.
- * No event-loop overhead. No serialization copies. Pure RAM speed.
- *
- * This file is an internal adapter. Use `import { serve, connect } from 'zinc'`
- * for the developer-friendly high-level API.
+ * bun-ffi/index.ts — Bun runtime adapter.
+ * Calls the Zig shared library via bun:ffi. Hot path uses pre-allocated
+ * buffers so poll() does zero JS heap allocation per message.
  */
 
 import { dlopen, FFIType, ptr } from "bun:ffi";
@@ -16,8 +9,6 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 import { Buffer } from "node:buffer";
-
-// ── Types ──────────────────────────────────────────────────────────────────
 
 export const MSG = {
   CALL: 0x01,
@@ -37,8 +28,6 @@ export interface ReceivedMessage {
   senderPid: number;
   payload: Buffer;
 }
-
-// ── FFI Library definition ─────────────────────────────────────────────────
 
 function loadLib() {
   const libDir =
@@ -89,18 +78,8 @@ function loadLib() {
   });
 }
 
-// ── Header layout (must match UIPCHeader in uipc.h exactly) ────────────────
-// Offsets into a 32-byte DataView:
-//   0  magic       u8
-//   1  version     u8
-//   2  flags       u16 LE
-//   4  payload_len u32 LE
-//   8  msg_id      u64 LE
-//  16  correlation u64 LE
-//  24  msg_type    u8
-//  25  sender_pid  u16 LE
-//  27  _pad[5]
-
+// Header layout (32 bytes, LE): magic u8, version u8, flags u16, payload_len u32,
+// msg_id u64, correlation_id u64, msg_type u8, sender_pid u16, _pad[5].
 const HEADER_SIZE = 32;
 
 function parseHeader(view: DataView) {
@@ -115,18 +94,16 @@ function parseHeader(view: DataView) {
   };
 }
 
-// ── UIPCRing class ─────────────────────────────────────────────────────────
-
 export class UIPCRing {
   readonly #lib: ReturnType<typeof loadLib>;
   readonly #ring: number; // opaque pointer
   readonly #maxPayload: number;
   #msgId: bigint = 1n;
 
-  // Reusable output buffers for the hot poll() path (avoids alloc).
+  // Pre-allocated poll() buffers — zero heap alloc on the hot path.
   readonly #headerBuf: ArrayBuffer;
   readonly #payloadBuf: ArrayBuffer;
-  readonly #lenBuf: ArrayBuffer; // u32
+  readonly #lenBuf: ArrayBuffer;
 
   constructor(name: string, create: boolean) {
     this.#lib = loadLib();
@@ -141,8 +118,6 @@ export class UIPCRing {
     this.#payloadBuf = new ArrayBuffer(this.#maxPayload);
     this.#lenBuf = new ArrayBuffer(4);
   }
-
-  // ── Producer ──────────────────────────────────────────────────────────
 
   /** Send a message. Returns the assigned msg_id. */
   send(msgType: MsgType, payload: Buffer, correlationId = 0n): bigint {
@@ -159,33 +134,23 @@ export class UIPCRing {
     return id;
   }
 
-  /** High-level: send a CALL and return the msg_id for correlation. */
   call(payload: Buffer): bigint {
     return this.send(MSG.CALL, payload);
   }
 
-  /** High-level: reply to a received call. */
   reply(payload: Buffer, correlationId: bigint): void {
     this.send(MSG.REPLY, payload, correlationId);
   }
 
-  /** Fire-and-forget event. */
   emit(payload: Buffer): void {
     this.send(MSG.EVENT, payload);
   }
 
-  /** Send a PING and return the msg_id. */
   ping(): bigint {
     return this.send(MSG.PING, Buffer.alloc(0));
   }
 
-  // ── Consumer ──────────────────────────────────────────────────────────
-
-  /**
-   * Non-blocking poll.
-   * Returns a message object if available, or null if the ring is empty.
-   * Hot path: uses pre-allocated buffers, zero JS heap allocation.
-   */
+  /** Non-blocking poll. Null if the ring is empty. Zero heap alloc. */
   poll(): ReceivedMessage | null {
     const hdrPtr = ptr(this.#headerBuf);
     const payPtr = ptr(this.#payloadBuf);
@@ -215,10 +180,6 @@ export class UIPCRing {
     };
   }
 
-  /**
-   * Drain all available messages. Synchronous.
-   * Suitable for batch processing after a wakeup signal.
-   */
   drain(): ReceivedMessage[] {
     const msgs: ReceivedMessage[] = [];
     let msg: ReceivedMessage | null;
@@ -226,10 +187,7 @@ export class UIPCRing {
     return msgs;
   }
 
-  /**
-   * Spin-wait (on the calling thread) for a REPLY whose correlationId matches.
-   * Not appropriate for the main thread — use in a Worker or Bun.spawn.
-   */
+  /** Spin-wait for a REPLY. Use in a Worker, not the main thread. */
   waitForReply(correlationId: bigint, timeoutMs = 5000): ReceivedMessage {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
@@ -247,9 +205,6 @@ export class UIPCRing {
     );
   }
 
-  // ── Utilities ──────────────────────────────────────────────────────────
-
-  /** Returns `{ used: bigint, free: bigint }`. */
   stats(): { used: bigint; free: bigint } {
     const usedBuf = new ArrayBuffer(8);
     const freeBuf = new ArrayBuffer(8);
@@ -266,12 +221,11 @@ export class UIPCRing {
     return this.#maxPayload;
   }
 
-  /** Unlink the shm segment (call once, from the process that created it). */
+  /** Unlink the shm segment. Call once, from the process that created it. */
   unlink(): void {
     this.#lib.symbols.uipc_unlink(this.#ring);
   }
 
-  /** Detach from the ring and free native resources. */
   close(): void {
     this.#lib.symbols.uipc_close(this.#ring);
     this.#lib.close();
@@ -281,8 +235,6 @@ export class UIPCRing {
     this.close();
   }
 }
-
-// ── Convenience factory ─────────────────────────────────────────────────────
 
 export function createRing(name = "/uipc_bridge_v1"): UIPCRing {
   return new UIPCRing(name, true);

@@ -1,13 +1,7 @@
 /**
  * protocol/pool.ts
- * Connection pool for Universal-IPC Bridge.
- *
- * Manages a set of named ring pairs (req + rep) and provides:
- *  - Named channel registration
- *  - Round-robin load balancing across multiple worker processes
- *  - Health checking via PING/PONG
- *  - Automatic reconnection on stale rings
- *  - Per-channel statistics
+ * Named ring pairs with round-robin dispatch and health monitoring.
+ * Useful for multi-worker topologies where one client fans out to N servers.
  */
 
 import type { RingLike } from "./rpc.ts";
@@ -125,16 +119,11 @@ export class RingPool {
     return { req: entry.reqRing, rep: entry.repRing };
   }
 
-  /**
-   * Pick the next healthy worker channel via round-robin.
-   * Skips unhealthy channels. Throws if no healthy workers.
-   */
+  /** Pick the next healthy worker via round-robin. Throws if none available. */
   nextWorker(): { name: string; req: RingLike; rep: RingLike } {
     if (this.#workers.length === 0) throw new Error("No workers registered");
 
-    const start = this.#rrIndex;
     let attempts = 0;
-
     while (attempts < this.#workers.length) {
       const idx = this.#rrIndex % this.#workers.length;
       this.#rrIndex = (this.#rrIndex + 1) % this.#workers.length;
@@ -192,10 +181,7 @@ export class RingPool {
 
   // ── Health monitoring ────────────────────────────────────────────────────
 
-  /**
-   * Start periodic health checks. Sends a PING on each worker channel
-   * and marks it healthy/unhealthy based on response time.
-   */
+  /** Periodically PING each worker and mark healthy/unhealthy. */
   startHealthCheck(intervalMs = 5000, timeoutMs = 1000): void {
     this.#healthTimer = setInterval(async () => {
       for (const name of this.#workers) {

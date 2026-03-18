@@ -1,16 +1,7 @@
 /**
- * deno-plugin/mod.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
- * Deno runtime adapter (internal).
- *
- * Uses Deno.dlopen to call the Zig shared library directly.
- * Permissions required: --allow-ffi --allow-env
- *
- * This file is an internal adapter. Use `import { serve, connect } from 'zinc'`
- * for the developer-friendly high-level API.
+ * deno-plugin/mod.ts — Deno runtime adapter.
+ * Requires: --allow-ffi --allow-env
  */
-
-// ── FFI symbols ────────────────────────────────────────────────────────────
 
 const HEADER_SIZE = 32;
 
@@ -39,8 +30,6 @@ const lib = Deno.dlopen(getLibPath(), {
   uipc_max_payload: { parameters: [], result: "u32" },
 } as const);
 
-// ── Types ──────────────────────────────────────────────────────────────────
-
 export const MSG = {
   CALL: 0x01 as const,
   REPLY: 0x02 as const,
@@ -58,8 +47,8 @@ export interface ReceivedMessage {
   payload: Uint8Array;
 }
 
-// ── Header parser ──────────────────────────────────────────────────────────
-
+// Header layout (32 bytes, LE): magic u8, version u8, flags u16, payload_len u32,
+// msg_id u64, correlation_id u64, msg_type u8, sender_pid u16, _pad[5].
 function parseHeader(buf: ArrayBuffer) {
   const v = new DataView(buf);
   return {
@@ -73,16 +62,18 @@ function parseHeader(buf: ArrayBuffer) {
   };
 }
 
-// ── UIPCRing class ─────────────────────────────────────────────────────────
-
 export class UIPCRing {
   readonly #ring: Deno.PointerValue;
   readonly #maxPayload: number;
   #msgId: bigint = 1n;
 
+  // Pre-allocated views for poll() — reused every call, zero heap alloc.
   readonly #headerBuf: ArrayBuffer;
   readonly #payloadBuf: ArrayBuffer;
   readonly #lenBuf: ArrayBuffer;
+  readonly #headerView: Uint8Array;
+  readonly #payloadView: Uint8Array;
+  readonly #lenView: Uint8Array;
 
   constructor(name: string, create: boolean) {
     this.#maxPayload = lib.symbols.uipc_max_payload();
@@ -97,9 +88,10 @@ export class UIPCRing {
     this.#headerBuf = new ArrayBuffer(HEADER_SIZE);
     this.#payloadBuf = new ArrayBuffer(this.#maxPayload);
     this.#lenBuf = new ArrayBuffer(4);
+    this.#headerView = new Uint8Array(this.#headerBuf);
+    this.#payloadView = new Uint8Array(this.#payloadBuf);
+    this.#lenView = new Uint8Array(this.#lenBuf);
   }
-
-  // ── Producer ──────────────────────────────────────────────────────────
 
   send(msgType: number, payload: Uint8Array, correlationId = 0n): bigint {
     const id = this.#msgId++;
@@ -128,21 +120,20 @@ export class UIPCRing {
     return this.send(MSG.PING, new Uint8Array(0));
   }
 
-  // ── Consumer ──────────────────────────────────────────────────────────
-
+  /** Non-blocking poll. Null if empty. Reuses pre-allocated views. */
   poll(): ReceivedMessage | null {
-    const hdrBuf = new Uint8Array(this.#headerBuf);
-    const payBuf = new Uint8Array(this.#payloadBuf);
-    const lenBuf = new Uint8Array(this.#lenBuf);
-
-    const rc = lib.symbols.uipc_poll(this.#ring, hdrBuf, payBuf, lenBuf);
+    const rc = lib.symbols.uipc_poll(
+      this.#ring,
+      this.#headerView,
+      this.#payloadView,
+      this.#lenView,
+    );
 
     if (rc === 0) return null;
     if (rc === -1) throw new Error("Ring error or CRC mismatch");
 
     const hdr = parseHeader(this.#headerBuf);
-    const lenView = new DataView(this.#lenBuf);
-    const payLen = lenView.getUint32(0, true);
+    const payLen = new DataView(this.#lenBuf).getUint32(0, true);
     const payload = new Uint8Array(this.#payloadBuf, 0, payLen).slice(); // copy
 
     return {

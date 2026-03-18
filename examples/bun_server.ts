@@ -1,17 +1,11 @@
 /**
- * examples/bun_server.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
+ * Demo server (Bun). Accepts calls from any runtime — Node, Deno, or Bun.
  *
- * Demo server (Bun). Accepts calls from any runtime — Node.js, Deno, or Bun.
- *
- * Run:
  *   bun run examples/bun_server.ts
  *
- * Then in another terminal run one of:
- *   bun  run examples/deno_client.ts    (or use deno run ...)
- *   node --import tsx/esm examples/node_client.mjs
- *
- * For a simpler quickstart, see examples/quickstart/.
+ * Then in another terminal:
+ *   deno run --allow-ffi --allow-env examples/deno_client.ts
+ *   node examples/node_client.mjs
  */
 
 import { serve } from "../src/index.ts";

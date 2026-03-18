@@ -1,13 +1,6 @@
 /**
- * examples/deno_client.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
- *
- * Demo client (Deno). Connects to the demo server running in any runtime.
- *
- * Run (server must be running first):
+ * Demo client (Deno). Server must be running first.
  *   deno run --allow-ffi --allow-env examples/deno_client.ts
- *
- * For a simpler quickstart, see examples/quickstart/.
  */
 
 import { connect } from "../src/index.ts";

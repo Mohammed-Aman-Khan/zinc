@@ -1,42 +1,21 @@
-/**
- * src/runtime.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
- *
- * Runtime detection and native ring-buffer adapter loading.
- * Each runtime gets the right native binding automatically —
- * no manual configuration required.
- */
+/** src/runtime.ts — detect the current JS runtime and load the right native adapter. */
 
 import type { ZincRuntime } from "./types.ts";
 import type { RingLike } from "../protocol/rpc.ts";
 
-// ── Runtime detection ─────────────────────────────────────────────────────────
-
 declare const Bun: unknown;
 declare const Deno: unknown;
 
-/**
- * Detect which JS runtime is currently executing.
- *
- * Detection order: Bun → Deno → Node.js (fallback).
- * Works across all three runtimes without external dependencies.
- */
+/** Bun → Deno → Node fallback. Simple globals check, no deps. */
 export function detectRuntime(): ZincRuntime {
   if (typeof Bun !== "undefined") return "bun";
   if (typeof Deno !== "undefined") return "deno";
   return "node";
 }
 
-// ── Ring factory ──────────────────────────────────────────────────────────────
-
 /**
- * Open a native ring buffer appropriate for the current runtime.
- *
- * @param name    POSIX shm name, e.g. "/my-service"
- * @param create  true = server (creates the ring), false = client (attaches)
- *
- * Uses dynamic imports so each runtime adapter is only loaded when actually
- * needed — no Bun/Deno/Node modules are bundled into the wrong runtime.
+ * Open the right native ring adapter for the detected runtime.
+ * Dynamic imports mean each adapter is only loaded when actually needed.
  */
 export async function openRing(
   name: string,

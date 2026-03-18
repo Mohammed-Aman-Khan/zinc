@@ -1,31 +1,18 @@
 /**
  * protocol/flat_msg.ts
- * Zero-copy, schema-free binary serialization for Universal-IPC Bridge.
+ * Schema-free binary serialization. Little-endian, no alignment padding.
  *
- * Wire layout (little-endian, no alignment padding):
+ * Wire layout:
+ *   u8  field_count
+ *   repeated field_count times:
+ *     u8  type_tag
+ *     u16 key_len
+ *     u8  key_bytes[key_len]
+ *     u32 value_len
+ *     u8  value_bytes[value_len]
  *
- *   ┌────────────────────────────────────────────────────────────┐
- *   │ u8  field_count                                            │
- *   │ ┌──────────────────────────────────────────────────────┐   │
- *   │ │ u8  type_tag                                         │   │
- *   │ │ u16 key_len                                          │   │
- *   │ │ u8  key_bytes[key_len]                               │   │
- *   │ │ u32 value_len                                        │   │
- *   │ │ u8  value_bytes[value_len]                           │   │
- *   │ └──────────────────────────────────────────────────────┘   │
- *   │  ... repeated field_count times                            │
- *   └────────────────────────────────────────────────────────────┘
- *
- * Type tags:
- *   0x01  u32     (4 bytes LE)
- *   0x02  u64     (8 bytes LE — stored as two u32)
- *   0x03  f64     (8 bytes LE IEEE-754)
- *   0x04  bool    (1 byte: 0 or 1)
- *   0x05  string  (UTF-8 bytes, no null terminator)
- *   0x06  bytes   (raw binary)
- *   0x07  null
- *   0x08  i32     (4 bytes LE two's complement)
- *   0x09  i64     (8 bytes LE two's complement)
+ * Tags: 0x01=u32  0x02=u64  0x03=f64  0x04=bool  0x05=string
+ *       0x06=bytes  0x07=null  0x08=i32  0x09=i64
  */
 
 export type FlatValue =
@@ -200,7 +187,7 @@ function decodeValue(tag: number, b: Uint8Array): FlatValue {
       return { type: "i64", value: (hi << 32n) | lo };
     }
     case TAG.string:
-      return { type: "string", value: new TextDecoder().decode(b) };
+      return { type: "string", value: DEC.decode(b) };
     case TAG.bytes:
       return { type: "bytes", value: b.slice() };
     default:
@@ -241,34 +228,12 @@ export function encodeAuto(obj: Record<string, unknown>): Uint8Array {
   return encode(msg);
 }
 
-/** Decode to a plain JS object (loses type precision for numerics). */
+/** Decode to a plain JS object. Bigints stay as bigint; numerics as number. */
 export function decodeAuto(buf: Uint8Array): Record<string, unknown> {
   const msg = decode(buf);
   const out: Record<string, unknown> = {};
   for (const [k, fv] of Object.entries(msg)) {
-    switch (fv.type) {
-      case "null":
-        out[k] = null;
-        break;
-      case "bool":
-        out[k] = fv.value;
-        break;
-      case "u32":
-      case "i32":
-      case "f64":
-        out[k] = fv.value;
-        break;
-      case "u64":
-      case "i64":
-        out[k] = fv.value;
-        break;
-      case "string":
-        out[k] = fv.value;
-        break;
-      case "bytes":
-        out[k] = fv.value;
-        break;
-    }
+    out[k] = fv.type === "null" ? null : (fv as { value: unknown }).value;
   }
   return out;
 }

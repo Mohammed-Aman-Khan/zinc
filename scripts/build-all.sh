@@ -1,13 +1,6 @@
 #!/usr/bin/env bash
-# scripts/build-all.sh
-# Zinc — Universal IPC Bridge for JS Runtimes
-#
-# Builds all native components:
-#   1. Zig core        — the lock-free shared-memory ring buffer (libuipc_core)
-#   2. Rust N-API addon — Node.js native bindings (uipc_node.node)
-#
-# After a successful build, set ZINC_LIB_DIR to the Zig output directory
-# to override the default search path (useful for CI or custom install dirs).
+# Builds all native components: Zig core + Rust N-API addon.
+# Set ZINC_LIB_DIR after the build to override the default lib search path.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

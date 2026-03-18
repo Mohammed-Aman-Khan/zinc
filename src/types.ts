@@ -1,23 +1,10 @@
-/**
- * src/types.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
- *
- * All public-facing TypeScript types exported from the Zinc package.
- */
+/** All public-facing TypeScript types for the Zinc package. */
 
-// ── Handler types ─────────────────────────────────────────────────────────────
-
-/** A function that handles an incoming RPC call. */
 export type Handler = (
   args: Record<string, unknown>,
 ) => Promise<unknown> | unknown;
 
-// ── Server API ────────────────────────────────────────────────────────────────
-
-/**
- * A Zinc server. Registers handlers and serves RPC calls from any connected
- * client regardless of which JS runtime the client runs on.
- */
+/** Returned by `serve()`. Register handlers, then call `close()` when done. */
 export interface ZincServer {
   /**
    * Register an RPC handler.
@@ -39,12 +26,7 @@ export interface ZincServer {
   close(): void;
 }
 
-// ── Client API ────────────────────────────────────────────────────────────────
-
-/**
- * A Zinc client. Calls RPC methods and emits events to a server running in
- * any JS runtime (Bun, Node.js, Deno) on the same machine.
- */
+/** Returned by `connect()`. Call remote methods, emit events, then `close()`. */
 export interface ZincClient {
   /**
    * Call a remote method and await the result.
@@ -72,33 +54,16 @@ export interface ZincClient {
   close(): void;
 }
 
-// ── Options ───────────────────────────────────────────────────────────────────
-
 export interface ServeOptions {
-  /**
-   * How fast to poll for incoming messages.
-   * 0 = as fast as possible (lowest latency, highest CPU).
-   * Default: 0
-   */
+  /** Poll interval in ms. 0 = as fast as possible (lowest latency, highest CPU). */
   pollIntervalMs?: number;
 }
 
 export interface ConnectOptions {
-  /**
-   * How fast to poll for replies.
-   * 0 = as fast as possible.
-   * Default: 0
-   */
+  /** Poll interval in ms for reply checking. Default: 0. */
   pollIntervalMs?: number;
-
-  /**
-   * Default timeout for calls in milliseconds.
-   * Default: 5000
-   */
+  /** Default call timeout in ms. Default: 5000. */
   defaultTimeoutMs?: number;
 }
 
-// ── Runtime ───────────────────────────────────────────────────────────────────
-
-/** The detected JS runtime. */
 export type ZincRuntime = "bun" | "deno" | "node";

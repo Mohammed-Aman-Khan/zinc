@@ -1,24 +1,16 @@
 /**
  * protocol/rpc.ts
- * Lightweight RPC layer over the Universal-IPC ring buffer.
+ * CALL/REPLY correlation over the ring buffer.
  *
- * Pattern:
- *   Caller  → sends CALL with { method, args... }
- *   Callee  → receives CALL, dispatches handler, sends REPLY with { result } or { error }
- *   Caller  → receives REPLY matched by correlationId
+ *   caller → CALL { method, ...args }
+ *   callee → REPLY { result } | { error }
+ *   caller ← matched by correlationId
  *
- * Both sides share the same ring (MPSC-like). Each peer must have a unique
- * consumer window — or use two separate rings (one per direction).
+ * Both sides can share one ring (MPSC-like), or use two separate rings
+ * (one per direction) — pass `recvRing` to the constructor to opt in.
  */
 
-import {
-  encode,
-  decode,
-  encodeAuto,
-  decodeAuto,
-  v,
-  type FlatMsg,
-} from "./flat_msg.ts";
+import { encodeAuto, decodeAuto } from "./flat_msg.ts";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -44,18 +36,15 @@ export interface RPCPeer {
   stop(): void;
 }
 
-// Minimal ring interface so this module stays transport-agnostic.
+// Transport-agnostic ring interface. Node's Buffer extends Uint8Array, so
+// Uint8Array covers all runtimes without pulling in node types here.
 export interface RingLike {
-  send(
-    msgType: number,
-    payload: Uint8Array | Buffer,
-    correlationId?: bigint,
-  ): bigint;
+  send(msgType: number, payload: Uint8Array, correlationId?: bigint): bigint;
   poll(): {
     msgType: number;
     msgId: bigint;
     correlationId: bigint;
-    payload: Uint8Array | Buffer;
+    payload: Uint8Array;
   } | null;
   readonly maxPayloadSize: number;
 }
@@ -83,12 +72,8 @@ export class RPCNode implements RPCPeer {
   static readonly MSG_EVENT = 0x03;
   static readonly MSG_ERROR = 0xff;
 
-  /**
-   * Two-ring model: sendRing carries requests, recvRing carries replies.
-   * For a server: sendRing = replyRing, recvRing = requestRing.
-   * For a client: sendRing = requestRing, recvRing = replyRing.
-   * Single-ring mode (same ring for both) works for simple cases.
-   */
+  // sendRing carries outbound CALLs/events; recvRing carries inbound replies/calls.
+  // Omit recvRing to use one ring for both directions (fine for simple cases).
   constructor(sendRing: RingLike, recvRing?: RingLike) {
     this.#sendRing = sendRing;
     this.#recvRing = recvRing ?? sendRing;
@@ -96,13 +81,13 @@ export class RPCNode implements RPCPeer {
 
   // ── Producer ──────────────────────────────────────────────────────────
 
-  async call(
+  call(
     method: string,
     args: Record<string, unknown> = {},
     timeoutMs = 5000,
   ): Promise<unknown> {
     const payload = encodeAuto({ method, ...args });
-    const msgId = this.#sendRing.send(RPCNode.MSG_CALL, payload as any);
+    const msgId = this.#sendRing.send(RPCNode.MSG_CALL, payload);
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -116,7 +101,7 @@ export class RPCNode implements RPCPeer {
 
   emit(event: string, data: Record<string, unknown> = {}): void {
     const payload = encodeAuto({ event, ...data });
-    this.#sendRing.send(RPCNode.MSG_EVENT, payload as any);
+    this.#sendRing.send(RPCNode.MSG_EVENT, payload);
   }
 
   // ── Consumer ──────────────────────────────────────────────────────────
@@ -151,15 +136,8 @@ export class RPCNode implements RPCPeer {
 
     let msg;
     while ((msg = this.#recvRing.poll()) !== null) {
-      const payload =
-        msg.payload instanceof Buffer
-          ? new Uint8Array(
-              msg.payload.buffer,
-              msg.payload.byteOffset,
-              msg.payload.byteLength,
-            )
-          : msg.payload;
-
+      // Node's Buffer extends Uint8Array — no conversion needed.
+      const payload = msg.payload;
       switch (msg.msgType) {
         case RPCNode.MSG_CALL:
           this.#handleCall(msg.msgId, payload);
@@ -197,7 +175,7 @@ export class RPCNode implements RPCPeer {
     );
 
     try {
-      this.#sendRing.send(RPCNode.MSG_REPLY, replyPayload as any, msgId);
+      this.#sendRing.send(RPCNode.MSG_REPLY, replyPayload, msgId);
     } catch {
       // Ring full — caller will time out.
     }

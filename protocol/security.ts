@@ -1,15 +1,8 @@
 /**
  * protocol/security.ts
- * Security hardening layer for Universal-IPC Bridge.
- *
- * Sits between the ring buffer consumer and the RPC dispatcher.
- * Enforces:
- *   1. Monotonic sequence numbers (replay protection)
- *   2. PID allowlist (origin verification)
- *   3. Rate limiting per PID (DoS protection)
- *   4. Payload size hard cap (overflow protection)
- *   5. Message type allowlist
- *   6. Method name allowlist (optional, for production lockdown)
+ * Optional security layer between the ring consumer and the RPC dispatcher.
+ * Handles replay protection, PID allowlists, rate limiting, and method lockdown.
+ * Plug it in when you care about untrusted senders — skip it in benchmarks.
  */
 
 export interface SecurityPolicy {
@@ -52,7 +45,7 @@ export interface IncomingMsg {
   msgId: bigint;
   correlationId: bigint;
   senderPid: number;
-  payload: Uint8Array | Buffer;
+  payload: Uint8Array; // Node's Buffer extends Uint8Array — no extra type needed
 }
 
 export interface SecurityVerdict {
@@ -61,7 +54,6 @@ export interface SecurityVerdict {
 }
 
 const DEFAULT_ALLOWED_TYPES = new Set([0x01, 0x02, 0x03, 0x04, 0x05]);
-const DEC = new TextDecoder();
 
 export class SecurityGuard {
   readonly #policy: Required<SecurityPolicy>;
@@ -84,11 +76,10 @@ export class SecurityGuard {
 
   verify(msg: IncomingMsg): SecurityVerdict {
     // 1. Payload size
-    const payLen = msg.payload.length ?? (msg.payload as Buffer).byteLength;
-    if (payLen > this.#policy.maxPayloadBytes) {
+    if (msg.payload.length > this.#policy.maxPayloadBytes) {
       return {
         allowed: false,
-        reason: `Payload too large: ${payLen} > ${this.#policy.maxPayloadBytes}`,
+        reason: `Payload too large: ${msg.payload.length} > ${this.#policy.maxPayloadBytes}`,
       };
     }
 

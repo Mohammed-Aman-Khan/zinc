@@ -1,22 +1,9 @@
 /**
- * examples/node_client.mjs
- * Zinc — Universal IPC Bridge for JS Runtimes
+ * Node.js demo client — hits the N-API addon directly, bypassing the high-level
+ * Zinc API. Useful as a plain-JS reference; shows what the TS layer does under the hood.
  *
- * Node.js demo client — low-level example using the Rust N-API addon directly.
- *
- * For the high-level Zinc API (recommended), use TypeScript and run:
- *   node --import tsx/esm examples/quickstart/client.ts
- * Or install tsx globally: npm i -g tsx
- *
- * This file exists as a plain-JS reference for environments where a TypeScript
- * loader is not available. It bypasses the Zinc abstraction layer and calls the
- * N-API addon directly — which is exactly what Zinc does under the hood.
- *
- * Run (after bun_server.ts or quickstart/server.ts is running):
- *   node examples/node_client.mjs
- *
- * Requires the Rust N-API addon to be built first:
- *   cd node-addon && cargo build --release
+ *   node examples/node_client.mjs   (server must be running first)
+ *   cd node-addon && cargo build --release   (if addon isn't built yet)
  */
 
 import { createRequire } from "node:module";
@@ -215,8 +202,6 @@ class NodeRPCClient {
     clearInterval(this.#poll);
   }
 }
-
-// ── Main ─────────────────────────────────────────────────────────────────
 
 (async () => {
   const ring = new UIPCRingHandle(RING_NAME, false);
