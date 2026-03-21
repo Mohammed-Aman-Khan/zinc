@@ -70,6 +70,8 @@ export class RPCNode implements RPCPeer {
   static readonly MSG_CALL = 0x01;
   static readonly MSG_REPLY = 0x02;
   static readonly MSG_EVENT = 0x03;
+  static readonly MSG_PING = 0x04;
+  static readonly MSG_PONG = 0x05;
   static readonly MSG_ERROR = 0xff;
 
   // sendRing carries outbound CALLs/events; recvRing carries inbound replies/calls.
@@ -147,6 +149,17 @@ export class RPCNode implements RPCPeer {
           break;
         case RPCNode.MSG_EVENT:
           this.#handleEvent(payload);
+          break;
+        case RPCNode.MSG_PING:
+          // Respond with PONG using the same correlation id.
+          try {
+            this.#sendRing.send(RPCNode.MSG_PONG, new Uint8Array(0), msg.msgId);
+          } catch {
+            /* ring full — drop silently */
+          }
+          break;
+        case RPCNode.MSG_PONG:
+          // Health-check response — handled by pool layer, nothing to do here.
           break;
       }
     }
