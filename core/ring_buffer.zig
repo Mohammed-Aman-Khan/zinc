@@ -243,7 +243,7 @@ pub const RingBuffer = struct {
             .msg_id = msg_id,
             .correlation_id = correlation_id,
             .msg_type = @intFromEnum(msg_type),
-            .sender_pid = @intCast(std.os.linux.getpid() & 0xFFFF),
+            .sender_pid = @intCast(std.c.getpid()),
         };
         @memcpy(slot.payload[0..payload.len], payload);
 
