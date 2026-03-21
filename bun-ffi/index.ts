@@ -79,7 +79,7 @@ function loadLib() {
 }
 
 // Header layout (32 bytes, LE): magic u8, version u8, flags u16, payload_len u32,
-// msg_id u64, correlation_id u64, msg_type u8, sender_pid u16, _pad[5].
+// msg_id u64, correlation_id u64, msg_type u8, sender_pid u32, _pad[3].
 const HEADER_SIZE = 32;
 
 function parseHeader(view: DataView) {
@@ -90,7 +90,7 @@ function parseHeader(view: DataView) {
     msgId: view.getBigUint64(8, true),
     correlationId: view.getBigUint64(16, true),
     msgType: view.getUint8(24),
-    senderPid: view.getUint16(25, true),
+    senderPid: view.getUint32(25, true),
   };
 }
 

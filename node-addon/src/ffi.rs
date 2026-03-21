@@ -14,8 +14,8 @@ pub struct UIPCHeader {
     pub msg_id:         u64,
     pub correlation_id: u64,
     pub msg_type:       u8,
-    pub sender_pid:     u16,
-    pub _pad:           [u8; 5],
+    pub sender_pid:     u32,
+    pub _pad:           [u8; 3],
 }
 
 const _: () = assert!(std::mem::size_of::<UIPCHeader>() == 32);

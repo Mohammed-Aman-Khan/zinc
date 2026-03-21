@@ -48,7 +48,7 @@ export interface ReceivedMessage {
 }
 
 // Header layout (32 bytes, LE): magic u8, version u8, flags u16, payload_len u32,
-// msg_id u64, correlation_id u64, msg_type u8, sender_pid u16, _pad[5].
+// msg_id u64, correlation_id u64, msg_type u8, sender_pid u32, _pad[3].
 function parseHeader(buf: ArrayBuffer) {
   const v = new DataView(buf);
   return {
@@ -58,7 +58,7 @@ function parseHeader(buf: ArrayBuffer) {
     msgId: v.getBigUint64(8, true),
     correlationId: v.getBigUint64(16, true),
     msgType: v.getUint8(24),
-    senderPid: v.getUint16(25, true),
+    senderPid: v.getUint32(25, true),
   };
 }
 
