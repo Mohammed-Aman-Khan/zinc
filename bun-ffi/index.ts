@@ -4,7 +4,7 @@
  * buffers so poll() does zero JS heap allocation per message.
  */
 
-import { dlopen, FFIType, ptr } from "bun:ffi";
+import { dlopen, FFIType, ptr, toArrayBuffer } from "bun:ffi";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
@@ -74,6 +74,31 @@ function loadLib() {
     uipc_max_payload: {
       args: [],
       returns: FFIType.u32,
+    },
+    // Shared buffer API
+    uipc_shm_create: {
+      args: [FFIType.cstring, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    uipc_shm_open: {
+      args: [FFIType.cstring, FFIType.u64],
+      returns: FFIType.ptr,
+    },
+    uipc_shm_ptr: {
+      args: [FFIType.ptr],
+      returns: FFIType.ptr,
+    },
+    uipc_shm_size: {
+      args: [FFIType.ptr],
+      returns: FFIType.u64,
+    },
+    uipc_shm_close: {
+      args: [FFIType.ptr],
+      returns: FFIType.void,
+    },
+    uipc_shm_unlink: {
+      args: [FFIType.ptr],
+      returns: FFIType.void,
     },
   });
 }
@@ -242,4 +267,69 @@ export function createRing(name = "/uipc_bridge_v1"): UIPCRing {
 
 export function connectRing(name = "/uipc_bridge_v1"): UIPCRing {
   return new UIPCRing(name, false);
+}
+
+// ── Shared Buffer ─────────────────────────────────────────────────────────
+
+/**
+ * A cross-process shared memory region exposed as a raw ArrayBuffer.
+ * Both producer and consumer read/write the same physical pages — zero copies.
+ */
+export class SharedBuffer {
+  readonly #lib: ReturnType<typeof loadLib>;
+  readonly #handle: number; // opaque UIPCShm*
+  readonly #size: number;
+  readonly buffer: ArrayBuffer;
+
+  private constructor(
+    lib: ReturnType<typeof loadLib>,
+    handle: number,
+    size: number,
+  ) {
+    this.#lib = lib;
+    this.#handle = handle;
+    this.#size = size;
+
+    const rawPtr = this.#lib.symbols.uipc_shm_ptr(this.#handle);
+    if (!rawPtr) throw new Error("Failed to get shared memory pointer");
+
+    // Bun: toArrayBuffer wraps the raw pointer — direct view, zero copies.
+    this.buffer = toArrayBuffer(rawPtr, 0, size);
+  }
+
+  /** Create a new shared memory region. */
+  static create(name: string, size: number): SharedBuffer {
+    const lib = loadLib();
+    const nameBytes = Buffer.from(name + "\0");
+    const handle = lib.symbols.uipc_shm_create(ptr(nameBytes), BigInt(size));
+    if (!handle) throw new Error(`Failed to create shared buffer '${name}'`);
+    return new SharedBuffer(lib, handle, size);
+  }
+
+  /** Open an existing shared memory region. */
+  static open(name: string, size: number): SharedBuffer {
+    const lib = loadLib();
+    const nameBytes = Buffer.from(name + "\0");
+    const handle = lib.symbols.uipc_shm_open(ptr(nameBytes), BigInt(size));
+    if (!handle) throw new Error(`Failed to open shared buffer '${name}'`);
+    return new SharedBuffer(lib, handle, size);
+  }
+
+  get byteLength(): number {
+    return this.#size;
+  }
+
+  /** Unlink the shared memory segment from the filesystem. */
+  unlink(): void {
+    this.#lib.symbols.uipc_shm_unlink(this.#handle);
+  }
+
+  /** Unmap and close the region. */
+  close(): void {
+    this.#lib.symbols.uipc_shm_close(this.#handle);
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
 }

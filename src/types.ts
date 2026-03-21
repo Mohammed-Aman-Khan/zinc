@@ -67,3 +67,15 @@ export interface ConnectOptions {
 }
 
 export type ZincRuntime = "bun" | "deno" | "node";
+
+/** A cross-process shared memory region. */
+export interface SharedMemoryRegion {
+  /** The raw ArrayBuffer backed by mmap'd shared memory. Zero-copy. */
+  readonly buffer: ArrayBuffer;
+  /** Size of the region in bytes. */
+  readonly byteLength: number;
+  /** Unlink the shared memory segment from the filesystem. */
+  unlink(): void;
+  /** Unmap and close the region. */
+  close(): void;
+}

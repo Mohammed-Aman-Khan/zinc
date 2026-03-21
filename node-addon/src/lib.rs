@@ -342,3 +342,106 @@ pub const MSG_PING:  u8 = msg_type::PING;
 pub const MSG_PONG:  u8 = msg_type::PONG;
 #[napi]
 pub const MSG_ERROR: u8 = msg_type::ERROR;
+
+// ── Shared Buffer ─────────────────────────────────────────────────────────
+
+struct ShmState {
+    ptr: NonNull<ffi::UIPCShm>,
+    raw: *mut u8,
+    size: usize,
+}
+
+unsafe impl Send for ShmState {}
+unsafe impl Sync for ShmState {}
+
+impl Drop for ShmState {
+    fn drop(&mut self) {
+        unsafe { ffi::uipc_shm_close(self.ptr.as_ptr()) };
+    }
+}
+
+#[napi]
+pub struct SharedBufferHandle {
+    inner: Arc<ShmState>,
+}
+
+#[napi]
+impl SharedBufferHandle {
+    /// Create a new shared memory region.
+    #[napi(factory)]
+    pub fn create(env: Env, name: String, size: f64) -> Result<Self> {
+        let sz = size as u64;
+        let c_name = CString::new(name.clone())
+            .map_err(|_| Error::from_reason("Invalid shm name"))?;
+
+        let ptr = unsafe { ffi::uipc_shm_create(c_name.as_ptr(), sz) };
+        let nn = NonNull::new(ptr)
+            .ok_or_else(|| Error::from_reason(format!("Failed to create shared buffer '{name}'")))?;
+
+        let raw = unsafe { ffi::uipc_shm_ptr(nn.as_ptr()) };
+        if raw.is_null() {
+            return Err(Error::from_reason("Failed to get shared memory pointer"));
+        }
+
+        Ok(Self {
+            inner: Arc::new(ShmState { ptr: nn, raw, size: sz as usize }),
+        })
+    }
+
+    /// Open an existing shared memory region.
+    #[napi(factory)]
+    pub fn open(env: Env, name: String, size: f64) -> Result<Self> {
+        let sz = size as u64;
+        let c_name = CString::new(name.clone())
+            .map_err(|_| Error::from_reason("Invalid shm name"))?;
+
+        let ptr = unsafe { ffi::uipc_shm_open(c_name.as_ptr(), sz) };
+        let nn = NonNull::new(ptr)
+            .ok_or_else(|| Error::from_reason(format!("Failed to open shared buffer '{name}'")))?;
+
+        let raw = unsafe { ffi::uipc_shm_ptr(nn.as_ptr()) };
+        if raw.is_null() {
+            return Err(Error::from_reason("Failed to get shared memory pointer"));
+        }
+
+        Ok(Self {
+            inner: Arc::new(ShmState { ptr: nn, raw, size: sz as usize }),
+        })
+    }
+
+    /// Returns an ArrayBuffer backed by the shared memory region.
+    /// This is zero-copy — JS reads/writes hit the mmap'd pages directly.
+    #[napi]
+    pub fn buffer(&self, env: Env) -> Result<JsUnknown> {
+        let raw = self.inner.raw;
+        let size = self.inner.size;
+
+        // SAFETY: raw points to mmap'd memory that lives as long as ShmState.
+        // We use create_external_arraybuffer so the JS ArrayBuffer is backed
+        // directly by the shared memory — no copies.
+        let buf = unsafe {
+            env.create_arraybuffer_with_borrowed_data(
+                raw,
+                size,
+                std::ptr::null_mut::<std::ffi::c_void>(),
+                |_, _| {},
+            )?
+        };
+        Ok(buf.into_raw().into_unknown())
+    }
+
+    #[napi(getter)]
+    pub fn byte_length(&self) -> f64 {
+        self.inner.size as f64
+    }
+
+    #[napi]
+    pub fn unlink(&self) {
+        unsafe { ffi::uipc_shm_unlink(self.inner.ptr.as_ptr()) };
+    }
+
+    #[napi]
+    pub fn close(&self) {
+        unsafe { ffi::uipc_shm_close(self.inner.ptr.as_ptr()) };
+    }
+}

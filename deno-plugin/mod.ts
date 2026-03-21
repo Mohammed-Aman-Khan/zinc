@@ -28,6 +28,13 @@ const lib = Deno.dlopen(getLibPath(), {
   },
   uipc_stats: { parameters: ["pointer", "buffer", "buffer"], result: "void" },
   uipc_max_payload: { parameters: [], result: "u32" },
+  // Shared buffer API
+  uipc_shm_create: { parameters: ["buffer", "u64"], result: "pointer" },
+  uipc_shm_open: { parameters: ["buffer", "u64"], result: "pointer" },
+  uipc_shm_ptr: { parameters: ["pointer"], result: "pointer" },
+  uipc_shm_size: { parameters: ["pointer"], result: "u64" },
+  uipc_shm_close: { parameters: ["pointer"], result: "void" },
+  uipc_shm_unlink: { parameters: ["pointer"], result: "void" },
 } as const);
 
 export const MSG = {
@@ -201,4 +208,57 @@ export function createRing(name = "/uipc_bridge_v1") {
 }
 export function connectRing(name = "/uipc_bridge_v1") {
   return new UIPCRing(name, false);
+}
+
+// ── Shared Buffer ─────────────────────────────────────────────────────────
+
+export class SharedBuffer {
+  readonly #handle: Deno.PointerValue;
+  readonly #size: number;
+  readonly buffer: ArrayBuffer;
+
+  private constructor(handle: Deno.PointerValue, size: number) {
+    this.#handle = handle;
+    this.#size = size;
+
+    const rawPtr = lib.symbols.uipc_shm_ptr(this.#handle);
+    if (rawPtr === null) throw new Error("Failed to get shared memory pointer");
+
+    // Deno: UnsafePointerView.getArrayBuffer gives a direct view — zero copies.
+    this.buffer = Deno.UnsafePointerView.getArrayBuffer(rawPtr, size);
+  }
+
+  static create(name: string, size: number): SharedBuffer {
+    const enc = new TextEncoder();
+    const nameBuf = enc.encode(name + "\0");
+    const handle = lib.symbols.uipc_shm_create(nameBuf, BigInt(size));
+    if (handle === null)
+      throw new Error(`Failed to create shared buffer '${name}'`);
+    return new SharedBuffer(handle, size);
+  }
+
+  static open(name: string, size: number): SharedBuffer {
+    const enc = new TextEncoder();
+    const nameBuf = enc.encode(name + "\0");
+    const handle = lib.symbols.uipc_shm_open(nameBuf, BigInt(size));
+    if (handle === null)
+      throw new Error(`Failed to open shared buffer '${name}'`);
+    return new SharedBuffer(handle, size);
+  }
+
+  get byteLength(): number {
+    return this.#size;
+  }
+
+  unlink(): void {
+    lib.symbols.uipc_shm_unlink(this.#handle);
+  }
+
+  close(): void {
+    lib.symbols.uipc_shm_close(this.#handle);
+  }
+
+  [Symbol.dispose](): void {
+    this.close();
+  }
 }

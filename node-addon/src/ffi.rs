@@ -52,7 +52,24 @@ extern "C" {
 
     pub fn uipc_stats(ring: *mut UIPCRing, out_used: *mut u64, out_free: *mut u64);
     pub fn uipc_max_payload() -> u32;
+
+    // Shared buffer API
+    pub fn uipc_shm_create(name: *const c_char, size: u64) -> *mut UIPCShm;
+    pub fn uipc_shm_open(name: *const c_char, size: u64) -> *mut UIPCShm;
+    pub fn uipc_shm_ptr(shm: *mut UIPCShm) -> *mut u8;
+    pub fn uipc_shm_size(shm: *mut UIPCShm) -> u64;
+    pub fn uipc_shm_close(shm: *mut UIPCShm);
+    pub fn uipc_shm_unlink(shm: *mut UIPCShm);
 }
+
+/// Opaque handle for shared memory regions.
+#[repr(C)]
+pub struct UIPCShm {
+    _private: [u8; 0],
+}
+
+unsafe impl Send for UIPCShm {}
+unsafe impl Sync for UIPCShm {}
 
 /// Message type constants.
 pub mod msg_type {

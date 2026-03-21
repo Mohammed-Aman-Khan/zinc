@@ -12,6 +12,7 @@ import { join, dirname } from "node:path";
 import { Buffer } from "node:buffer";
 import process from "node:process";
 import type { RingLike } from "../../protocol/rpc.ts";
+import type { SharedMemoryRegion } from "../types.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -85,6 +86,47 @@ export class NodeRingAdapter implements RingLike {
 
   stats(): { used: bigint; free: bigint } {
     return this.#handle.stats();
+  }
+
+  unlink(): void {
+    this.#handle.unlink();
+  }
+
+  close(): void {
+    this.#handle.close();
+  }
+}
+
+// ── Shared Buffer (Node.js) ───────────────────────────────────────────────
+
+interface NativeSharedBufferHandle {
+  buffer(): ArrayBuffer;
+  byteLength: number;
+  unlink(): void;
+  close(): void;
+}
+
+export class NodeSharedBuffer implements SharedMemoryRegion {
+  readonly buffer: ArrayBuffer;
+  readonly byteLength: number;
+  readonly #handle: NativeSharedBufferHandle;
+
+  private constructor(handle: NativeSharedBufferHandle) {
+    this.#handle = handle;
+    this.buffer = handle.buffer();
+    this.byteLength = handle.byteLength;
+  }
+
+  static create(name: string, size: number): NodeSharedBuffer {
+    const addon = loadAddon();
+    const handle = addon.SharedBufferHandle.create(name, size);
+    return new NodeSharedBuffer(handle);
+  }
+
+  static open(name: string, size: number): NodeSharedBuffer {
+    const addon = loadAddon();
+    const handle = addon.SharedBufferHandle.open(name, size);
+    return new NodeSharedBuffer(handle);
   }
 
   unlink(): void {

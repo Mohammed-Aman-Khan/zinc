@@ -421,3 +421,126 @@ export fn uipc_stats(
 export fn uipc_max_payload() u32 {
     return MAX_PAYLOAD;
 }
+
+// ──────────────────────────────────────────────
+// Shared buffer API — raw cross-process memory regions
+// ──────────────────────────────────────────────
+
+const ShmRegion = struct {
+    ptr: [*]u8,
+    size: usize,
+    fd: i32,
+    name: []const u8,
+};
+
+const ExternShm = opaque {};
+
+/// Create a new shared memory region of `size` bytes.
+export fn uipc_shm_create(name_ptr: [*:0]const u8, size: u64) ?*ExternShm {
+    const posix = std.posix;
+    const name = std.mem.span(name_ptr);
+    const sz: usize = @intCast(size);
+
+    const fd = posix.shm_open(
+        name,
+        .{ .ACCMODE = .RDWR, .CREAT = true, .EXCL = false },
+        0o600,
+    ) catch return null;
+
+    posix.ftruncate(fd, @intCast(sz)) catch {
+        posix.close(fd);
+        return null;
+    };
+
+    const mapped = posix.mmap(
+        null,
+        sz,
+        posix.PROT.READ | posix.PROT.WRITE,
+        .{ .TYPE = .SHARED },
+        fd,
+        0,
+    ) catch {
+        posix.close(fd);
+        return null;
+    };
+
+    // Zero-initialize the region.
+    @memset(@as([*]u8, @ptrCast(mapped))[0..sz], 0);
+
+    const region = std.heap.c_allocator.create(ShmRegion) catch {
+        posix.munmap(@alignCast(mapped[0..sz]));
+        posix.close(fd);
+        return null;
+    };
+    region.* = .{
+        .ptr = @ptrCast(mapped),
+        .size = sz,
+        .fd = fd,
+        .name = name,
+    };
+    return @ptrCast(region);
+}
+
+/// Open an existing shared memory region (size is read from the fd).
+export fn uipc_shm_open(name_ptr: [*:0]const u8, size: u64) ?*ExternShm {
+    const posix = std.posix;
+    const name = std.mem.span(name_ptr);
+    const sz: usize = @intCast(size);
+
+    const fd = posix.shm_open(
+        name,
+        .{ .ACCMODE = .RDWR },
+        0o600,
+    ) catch return null;
+
+    const mapped = posix.mmap(
+        null,
+        sz,
+        posix.PROT.READ | posix.PROT.WRITE,
+        .{ .TYPE = .SHARED },
+        fd,
+        0,
+    ) catch {
+        posix.close(fd);
+        return null;
+    };
+
+    const region = std.heap.c_allocator.create(ShmRegion) catch {
+        posix.munmap(@alignCast(mapped[0..sz]));
+        posix.close(fd);
+        return null;
+    };
+    region.* = .{
+        .ptr = @ptrCast(mapped),
+        .size = sz,
+        .fd = fd,
+        .name = name,
+    };
+    return @ptrCast(region);
+}
+
+/// Get a raw pointer to the shared memory region.
+export fn uipc_shm_ptr(shm_ptr: *ExternShm) ?[*]u8 {
+    const region: *ShmRegion = @ptrCast(@alignCast(shm_ptr));
+    return region.ptr;
+}
+
+/// Get the size of the shared memory region in bytes.
+export fn uipc_shm_size(shm_ptr: *ExternShm) u64 {
+    const region: *ShmRegion = @ptrCast(@alignCast(shm_ptr));
+    return @intCast(region.size);
+}
+
+/// Unmap and close the shared memory region (does not unlink).
+export fn uipc_shm_close(shm_ptr: *ExternShm) void {
+    const region: *ShmRegion = @ptrCast(@alignCast(shm_ptr));
+    std.posix.munmap(@alignCast(region.ptr[0..region.size]));
+    std.posix.close(region.fd);
+    std.heap.c_allocator.destroy(region);
+}
+
+/// Unlink the shared memory segment (remove from filesystem).
+export fn uipc_shm_unlink(shm_ptr: *ExternShm) void {
+    const region: *ShmRegion = @ptrCast(@alignCast(shm_ptr));
+    std.posix.shm_unlink(region.name) catch {};
+}

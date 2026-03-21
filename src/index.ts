@@ -1,17 +1,27 @@
 /**
- * Zinc — cross-runtime IPC over a lock-free shared-memory ring buffer.
- * Most users need only `serve` and `connect`; everything else is escape hatches.
+ * Zinc — cross-process shared memory for JavaScript runtimes.
+ *
+ * Core primitive: `sharedBuffer()` gives you an ArrayBuffer backed by
+ * mmap'd shared memory — zero copies, zero serialization, direct memory access
+ * across processes and runtimes (Bun, Deno, Node.js).
+ *
+ * Legacy RPC: `serve()` and `connect()` still work for message-passing patterns.
  *
  * @example
- * const server = await serve('my-service')
- * server.handle('greet', ({ name }) => `Hello, ${name}!`)
+ * // Process A (producer)
+ * const region = await sharedBuffer('/my-data', 1024, true);
+ * const view = new Float32Array(region.buffer);
+ * view[0] = 42.0;
  *
- * const client = await connect('my-service')
- * await client.call('greet', { name: 'World' }) // 'Hello, World!'
+ * // Process B (consumer) — reads the same physical memory
+ * const region = await sharedBuffer('/my-data', 1024, false);
+ * const view = new Float32Array(region.buffer);
+ * console.log(view[0]); // 42.0
  */
 
 export { serve, connect } from "./channel.ts";
 export { detectRuntime } from "./runtime.ts";
+export { openSharedBuffer as sharedBuffer } from "./runtime.ts";
 
 export type {
   ZincServer,
@@ -20,6 +30,7 @@ export type {
   ServeOptions,
   ConnectOptions,
   ZincRuntime,
+  SharedMemoryRegion,
 } from "./types.ts";
 
 // ── Advanced / escape hatches ─────────────────────────────────────────────────
