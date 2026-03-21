@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# scripts/run-demo.sh — Launch the 3-runtime demo in tmux panes (or sequentially)
+# scripts/run-demo.sh — Launch the cross-runtime RPC demo (legacy API)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -7,26 +7,23 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CYAN='\033[0;36m'; GREEN='\033[0;32m'; NC='\033[0m'
 log() { echo -e "${CYAN}[demo]${NC} $*"; }
 
-# Clean up any stale ring.
-/dev/shm/uipc_demo_ring 2>/dev/null || true
-
 if command -v tmux >/dev/null 2>&1; then
-  log "Launching demo in tmux session 'uipc'..."
-  tmux new-session  -d -s uipc -x 220 -y 50
-  tmux rename-window -t uipc:0 "Bun Server"
-  tmux send-keys -t uipc:0 "cd '$ROOT' && bun run examples/bun_server.ts" Enter
+  log "Launching cross-runtime demo in tmux session 'zinc'..."
+  tmux new-session  -d -s zinc -x 220 -y 50
+  tmux rename-window -t zinc:0 "Bun Server"
+  tmux send-keys -t zinc:0 "cd '$ROOT' && bun run examples/bun_server.ts" Enter
 
   sleep 1
 
-  tmux new-window  -t uipc -n "Node Client"
-  tmux send-keys -t uipc:1 "sleep 0.5 && cd '$ROOT' && node examples/node_client.mjs" Enter
+  tmux new-window  -t zinc -n "Node Client"
+  tmux send-keys -t zinc:1 "sleep 0.5 && cd '$ROOT' && node examples/node_client.mjs" Enter
 
-  tmux new-window  -t uipc -n "Deno Client"
-  tmux send-keys -t uipc:2 \
+  tmux new-window  -t zinc -n "Deno Client"
+  tmux send-keys -t zinc:2 \
     "sleep 1 && cd '$ROOT' && deno run --allow-ffi --allow-env examples/deno_client.ts" Enter
 
-  tmux select-window -t uipc:0
-  tmux attach-session -t uipc
+  tmux select-window -t zinc:0
+  tmux attach-session -t zinc
 else
   log "tmux not found — running sequentially (server in background)."
   cd "$ROOT"

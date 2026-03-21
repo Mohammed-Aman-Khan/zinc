@@ -1,8 +1,8 @@
 /**
  * examples/quickstart/server.ts
- * Zinc — Universal IPC Bridge for JS Runtimes
+ * Zinc — Cross-process shared memory for JavaScript
  *
- * Quickstart: a minimal Zinc server.
+ * Quickstart: a minimal Zinc RPC server (legacy message-passing API).
  *
  * Run with ANY of:
  *   bun  run examples/quickstart/server.ts

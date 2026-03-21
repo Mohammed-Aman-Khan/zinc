@@ -1,7 +1,7 @@
 {
   "name": "zinc",
   "version": "0.1.0",
-  "description": "Universal IPC Bridge for JS Runtimes — zero-copy, lock-free communication between Bun, Node.js, and Deno",
+  "description": "Cross-process shared memory for JavaScript — mmap-backed ArrayBuffers across Bun, Node.js, and Deno",
   "type": "module",
   "main": "./src/index.ts",
   "exports": {
@@ -14,7 +14,6 @@
     "build": "bash scripts/build-all.sh",
     "bench": "bash scripts/bench.sh",
     "demo": "bash scripts/run-demo.sh",
-    "quickstart": "bash scripts/quickstart.sh",
     "test": "bun test tests/",
     "test:zig": "cd core && zig build test",
     "typecheck": "tsc --noEmit"
@@ -25,22 +24,20 @@
   },
   "keywords": [
     "zinc",
-    "ipc",
-    "inter-process-communication",
     "shared-memory",
-    "ring-buffer",
-    "lock-free",
+    "mmap",
     "zero-copy",
+    "cross-process",
+    "arraybuffer",
     "bun",
     "deno",
     "nodejs",
     "cross-runtime",
+    "ipc",
     "zig",
-    "rust",
     "ffi",
     "napi",
-    "performance",
-    "rpc"
+    "performance"
   ],
   "license": "MIT",
   "repository": {
