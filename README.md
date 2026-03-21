@@ -1,153 +1,137 @@
-# ⚡ Zinc — IPC bridge for JS runtimes
+# Zinc — cross-process shared memory for JavaScript
 
-> **This is an experimental project.** The API is stable enough to use, but the native layer is still young. Production use is at your own risk (and honestly, that's kind of the point).
+> **Experimental.** The native layer is young. Production use is at your own risk.
 
-Zero-copy, lock-free IPC between **Bun**, **Node.js**, and **Deno** — on the same machine, at RAM speed.
+Zinc gives JavaScript processes direct access to the same physical memory — across Bun, Node.js, and Deno. No serialization, no copies, no kernel round-trips. Just `mmap` under the hood and an `ArrayBuffer` in your hands.
+
+Think `SharedArrayBuffer`, but cross-process.
 
 ---
 
-## The problem
+## Why
 
-Modern JS setups often span multiple runtimes. Bun for the hot API path, Node for the ecosystem, Deno for the sandboxed scripts — and they all need to talk. Before Zinc, your options were basically: Unix sockets (kernel round-trips), HTTP (full TCP stack), or some file-based hack. None of them are free.
+`SharedArrayBuffer` lets Worker threads share memory within a single process. There's no equivalent across processes. If you want two JS processes to share a large dataset — video frames, ML model outputs, game state, a shared cache — your options are: serialize it, copy it through a socket, deserialize it on the other side. For a 8MB frame at 60fps, that's 480MB/s of pointless copying.
 
-Zinc uses POSIX shared memory and a lock-free ring buffer to route messages between processes without ever touching the network stack. Messages go through RAM, not the kernel's socket layer. The latency difference is real.
+Zinc maps the same physical RAM pages into both processes via POSIX shared memory. Write a float in process A, read it in process B. No syscall, no copy, no serialization. The transfer time is zero because there's nothing to transfer — it's already there.
 
 ---
 
 ## Quick start
 
 ```bash
-git clone https://github.com/your-org/zinc
+git clone https://github.com/aspect-build/zinc
 cd zinc
 bash scripts/build-all.sh   # needs Zig ≥ 0.14; Rust optional (Node.js only)
 ```
 
-**Server** (any runtime):
+**Process A** — create a shared region and write to it:
 
 ```ts
-import { serve } from "./src/index.ts";
+import { sharedBuffer } from "./src/index.ts";
 
-const server = await serve("my-service");
-
-server
-  .handle("add", ({ a, b }) => (a as number) + (b as number))
-  .handle("ping", () => "pong")
-  .onEvent("log", ({ message }) => console.log("[log]", message));
+const region = await sharedBuffer("/my-data", 1024 * 1024, true);
+const floats = new Float32Array(region.buffer);
+floats[0] = 42.0;
+floats[1] = 3.14;
 ```
 
-**Client** (any other runtime, or the same one):
+**Process B** (any runtime) — open the same region:
 
 ```ts
-import { connect } from "./src/index.ts";
+import { sharedBuffer } from "./src/index.ts";
 
-const client = await connect("my-service");
-
-const sum = await client.call("add", { a: 40, b: 2 }); // → 42
-client.emit("log", { message: "hello from the other side" });
-client.close();
+const region = await sharedBuffer("/my-data", 1024 * 1024, false);
+const floats = new Float32Array(region.buffer);
+console.log(floats[0]); // 42.0 — same physical memory
 ```
 
-That's the whole API surface for 95% of use cases.
-
----
-
-## Cross-runtime demo
-
-```
-# Terminal 1 — Bun server
-bun run examples/bun_server.ts
-
-# Terminal 2 — Deno client
-deno run --allow-ffi --allow-env examples/deno_client.ts
-
-# Terminal 3 — Node.js client
-node examples/node_client.mjs
-```
-
-All three hit the same ring buffer through shared memory. No network, no serialization overhead beyond our own tiny binary format.
+That's it. Both processes are reading and writing the same bytes. Use `Atomics` on an `Int32Array` view for synchronization if you need it.
 
 ---
 
 ## API
 
-### `serve(channelName, options?): Promise<ZincServer>`
+### `sharedBuffer(name, size, create): Promise<SharedMemoryRegion>`
 
-Opens (or creates) the shared-memory ring and starts polling. Returns a server you can chain handlers onto.
+The core primitive. Returns an object whose `.buffer` is an `ArrayBuffer` backed by `mmap`'d shared memory.
 
-| Method                | Description                                            |
-| --------------------- | ------------------------------------------------------ |
-| `.handle(method, fn)` | Register an RPC handler. `fn` can be async. Chainable. |
-| `.onEvent(event, fn)` | Subscribe to fire-and-forget events. Chainable.        |
-| `.close()`            | Stop polling, release native resources.                |
+| Parameter | Type      | Description                                |
+| --------- | --------- | ------------------------------------------ |
+| `name`    | `string`  | POSIX shm name (e.g. `"/my-region"`)       |
+| `size`    | `number`  | Size in bytes                              |
+| `create`  | `boolean` | `true` to create, `false` to open existing |
 
-### `connect(channelName, options?): Promise<ZincClient>`
+`SharedMemoryRegion` has:
 
-Attaches to an existing server's ring and starts polling for replies.
+| Property/Method | Description                            |
+| --------------- | -------------------------------------- |
+| `.buffer`       | The raw `ArrayBuffer` (zero-copy mmap) |
+| `.byteLength`   | Size of the region                     |
+| `.unlink()`     | Remove the shm segment from the OS     |
+| `.close()`      | Unmap and release resources            |
 
-| Method                             | Description                                                              |
-| ---------------------------------- | ------------------------------------------------------------------------ |
-| `.call(method, args?, timeoutMs?)` | RPC call. Returns `Promise<unknown>`. Throws on timeout or remote error. |
-| `.emit(event, data?)`              | Fire-and-forget. No reply expected.                                      |
-| `.close()`                         | Stop polling, release native resources.                                  |
+### Legacy RPC: `serve()` / `connect()`
+
+The message-passing API still works for simple request/response patterns where convenience matters more than throughput. See [`RFC-001.md`](./RFC-001.md) for context on when to use which.
+
+```ts
+import { serve, connect } from "./src/index.ts";
+
+// Server
+const server = await serve("my-service");
+server.handle("add", ({ a, b }) => (a as number) + (b as number));
+
+// Client (any runtime)
+const client = await connect("my-service");
+const sum = await client.call("add", { a: 40, b: 2 }); // 42
+```
 
 ### Environment variables
 
-| Variable          | Default                     | Description                                |
-| ----------------- | --------------------------- | ------------------------------------------ |
-| `ZINC_LIB_DIR`    | `core/zig-out/lib`          | Path to `libuipc_core.{dylib,so}`          |
-| `ZINC_NATIVE_DIR` | `node-addon/target/release` | Path to `uipc_node.node` (Node.js only)    |
-| `UIPC_LIB_DIR`    | —                           | Alias for `ZINC_LIB_DIR` (backward compat) |
+| Variable          | Default                     | Description                             |
+| ----------------- | --------------------------- | --------------------------------------- |
+| `ZINC_LIB_DIR`    | `core/zig-out/lib`          | Path to `libuipc_core.{dylib,so}`       |
+| `ZINC_NATIVE_DIR` | `node-addon/target/release` | Path to `uipc_node.node` (Node.js only) |
 
 ---
 
 ## Architecture
 
 ```
-  Your code
-  import { serve, connect } from './src/index.ts'
-         │                  │
-   ZincServer           ZincClient
-         └──────┬──────────┘
-            RPCNode  (protocol/rpc.ts)
-                │
-        Runtime adapter  (auto-detected)
-          Bun  → bun:ffi   → libuipc_core.dylib
-          Deno → Deno.dlopen → libuipc_core.so
-          Node → Rust N-API → uipc_node.node
-                │
-        POSIX shared memory
-        Lock-free ring buffer (Zig)
-        CRC32 · atomic ops · 4 KB slots
+  sharedBuffer("/name", size, create)
+         │
+  Runtime detection  (src/runtime.ts)
+         │
+  ┌──────┼──────────────┐
+  Bun    Deno           Node.js
+  bun:ffi  Deno.dlopen  Rust N-API
+  │        │             │
+  └────────┴─────────────┘
+         │
+  Zig core  (core/ring_buffer.zig)
+  shm_open → mmap → raw pointer
+         │
+  ArrayBuffer (external, zero-copy)
+  backed by the same physical pages
 ```
 
-The layering is intentional. `RPCNode` knows nothing about Bun or Deno — it only sees `RingLike`. The adapters know nothing about RPC — they only do send/poll. This makes each layer easy to test in isolation and easy to swap (e.g., adding a Windows named-pipe backend later wouldn't touch the protocol layer).
+Each runtime has its own adapter because each has a completely different FFI model. The adapters are thin — they call into the same Zig C-ABI functions and wrap the returned pointer as a native `ArrayBuffer`.
+
+The legacy ring buffer (lock-free, CRC32-checked, 4KB slots) is still available for message-passing use cases via `serve()`/`connect()`.
 
 ---
 
 ## Performance
 
-Zinc skips the OS network stack entirely, so the latency floor is basically "how fast can two processes hit the same cache line."
+The shared buffer path has no "transfer" to benchmark — both processes access the same RAM. The cost is a single `mmap` setup call, then memory reads/writes at native speed.
+
+For the legacy RPC path:
 
 | Transport              | Typical latency | Notes                           |
 | ---------------------- | --------------- | ------------------------------- |
-| Zinc (shared memory)   | 50–150 µs       | Lock-free ring, no kernel calls |
+| Zinc ring (shm)        | 50–150 µs       | Lock-free ring, no kernel calls |
 | Unix domain socket     | 100–500 µs      | Kernel copies on every message  |
 | HTTP/WebSocket (local) | 500 µs – 5 ms   | Full TCP stack                  |
-
-Throughput is north of 100k calls/sec for small payloads. The Zig benchmark (`bash scripts/bench.sh`) will tell you what your hardware can actually do.
-
----
-
-## Security
-
-Zinc is not a network protocol, but it does run between processes that may have different trust levels, so there's a `SecurityGuard` in `protocol/security.ts`:
-
-- **CRC32** on every slot — detects a corrupt or torn write before any data reaches your handler
-- **Payload bounds** — checked before any copy
-- **PID tagging** — every message carries sender PID; you can allowlist specific processes
-- **Monotonic sequence numbers** — replay detection per sender PID
-- **Rate limiting** — token bucket per PID, configurable
-- **shm permissions** — `0600` by default (owner only)
 
 ---
 
@@ -163,14 +147,27 @@ bash scripts/build-all.sh
 
 Outputs:
 
-- `core/zig-out/lib/libuipc_core.{dylib,so}` — for Bun and Deno
-- `node-addon/target/release/uipc_node.node` — for Node.js
+- `core/zig-out/lib/libuipc_core.{dylib,so}` — loaded by Bun and Deno
+- `node-addon/target/release/uipc_node.node` — loaded by Node.js
+
+---
+
+## Security
+
+Zinc runs between same-machine processes. The `SecurityGuard` in `protocol/security.ts` covers:
+
+- CRC32 on every ring slot
+- Payload bounds checking
+- PID tagging and allowlisting
+- Monotonic sequence numbers (replay detection)
+- Rate limiting (token bucket per PID)
+- shm permissions `0600` by default
 
 ---
 
 ## Contributing
 
-Open an issue before a big PR — let's talk about it first. For everything else, see [`DEVELOPMENT_GUIDE.md`](./DEVELOPMENT_GUIDE.md).
+Open an issue before a big PR. See [`DEVELOPMENT_GUIDE.md`](./DEVELOPMENT_GUIDE.md) for build instructions and project structure.
 
 Type-check before submitting: `bun run tsc --noEmit`
 
