@@ -24,7 +24,8 @@ export type FlatValue =
   | { type: "bytes"; value: Uint8Array }
   | { type: "null" }
   | { type: "i32"; value: number }
-  | { type: "i64"; value: bigint };
+  | { type: "i64"; value: bigint }
+  | { type: "json"; value: unknown };
 
 export type FlatMsg = Record<string, FlatValue>;
 
@@ -38,6 +39,7 @@ const TAG = {
   null: 0x07,
   i32: 0x08,
   i64: 0x09,
+  json: 0x0a,
 } as const;
 
 const ENC = new TextEncoder();
@@ -135,6 +137,8 @@ function encodeValue(v: FlatValue): Uint8Array {
       return ENC.encode(v.value);
     case "bytes":
       return v.value;
+    case "json":
+      return ENC.encode(JSON.stringify(v.value));
   }
 }
 
@@ -190,6 +194,8 @@ function decodeValue(tag: number, b: Uint8Array): FlatValue {
       return { type: "string", value: DEC.decode(b) };
     case TAG.bytes:
       return { type: "bytes", value: b.slice() };
+    case TAG.json:
+      return { type: "json", value: JSON.parse(DEC.decode(b)) };
     default:
       throw new Error(`Unknown type tag: 0x${tag.toString(16)}`);
   }
@@ -207,6 +213,7 @@ export const v = {
   str: (value: string): FlatValue => ({ type: "string", value }),
   bytes: (value: Uint8Array): FlatValue => ({ type: "bytes", value }),
   null: (): FlatValue => ({ type: "null" }),
+  json: (value: unknown): FlatValue => ({ type: "json", value }),
 };
 
 /** Encode a simple JS object using type inference. */
@@ -222,6 +229,8 @@ export function encodeAuto(obj: Record<string, unknown>): Uint8Array {
       else msg[k] = v.f64(val);
     } else if (typeof val === "string") msg[k] = v.str(val);
     else if (val instanceof Uint8Array) msg[k] = v.bytes(val);
+    else if (typeof val === "object" || Array.isArray(val))
+      msg[k] = v.json(val);
     else
       throw new Error(`Cannot auto-encode type ${typeof val} for key '${k}'`);
   }
