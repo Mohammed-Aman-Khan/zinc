@@ -31,8 +31,9 @@ use ffi::msg_type;
 // ── Shared ring state ──────────────────────────────────────────────────────
 
 struct RingState {
-    ptr:    NonNull<ffi::UIPCRing>,
-    msg_id: AtomicU64,
+    ptr:        NonNull<ffi::UIPCRing>,
+    msg_id:     AtomicU64,
+    max_payload: usize,
 }
 
 // SAFETY: UIPCRing is safe to send across threads; all mutations go through
@@ -66,10 +67,13 @@ impl UIPCRingHandle {
         let nn = NonNull::new(ptr)
             .ok_or_else(|| Error::from_reason(format!("Failed to open ring '{name}'")))?;
 
+        let max_payload = unsafe { ffi::uipc_max_payload() } as usize;
+
         Ok(Self {
             inner: Arc::new(RingState {
-                ptr:    nn,
-                msg_id: AtomicU64::new(1),
+                ptr:         nn,
+                msg_id:      AtomicU64::new(1),
+                max_payload,
             }),
         })
     }
@@ -158,7 +162,7 @@ impl UIPCRingHandle {
     #[napi]
     pub fn poll(&self, env: Env) -> Result<JsUnknown> {
         let mut header = ffi::UIPCHeader::default();
-        let max_payload = unsafe { ffi::uipc_max_payload() } as usize;
+        let max_payload = self.inner.max_payload;
         let mut payload_buf = vec![0u8; max_payload];
         let mut payload_len: u32 = 0;
 
